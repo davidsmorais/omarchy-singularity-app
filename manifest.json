@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "id": "david.singularity",
+  "name": "Singularity App",
+  "version": "1.0.0",
+  "author": "david",
+  "license": "MIT",
+  "description": "View and manage SingularityApp tasks from the Omarchy bar. Wears every Omarchy theme.",
+  "kinds": ["service", "bar-widget", "panel"],
+  "activation": "on-demand",
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml",
+    "panel": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Singularity App",
+    "description": "View and manage SingularityApp tasks from the Omarchy bar.",
+    "category": "Productivity",
+    "aliases": ["singularity", "tasks", "todo"],
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "apiToken": "",
+      "refreshMinutes": 5,
+      "showCompleted": false,
+      "maxTasks": 20
+    },
+    "schema": [
+      {
+        "key": "apiToken",
+        "type": "password",
+        "label": "API token",
+        "description": "Your SingularityApp v2 API token (Bearer). Create one in your account under API Access.",
+        "defaultValue": ""
+      },
+      {
+        "key": "refreshMinutes",
+        "type": "integer",
+        "label": "Refresh interval (minutes)",
+        "min": 1,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "How often the bar widget polls the API for new tasks."
+      },
+      {
+        "key": "showCompleted",
+        "type": "enum",
+        "label": "Show completed tasks",
+        "options": [
+          { "value": "on", "label": "On" },
+          { "value": "off", "label": "Off" }
+        ],
+        "defaultValue": "off",
+        "description": "When on, completed tasks appear in the list below active ones."
+      },
+      {
+        "key": "maxTasks",
+        "type": "integer",
+        "label": "Maximum tasks shown",
+        "min": 5,
+        "max": 100,
+        "step": 5,
+        "defaultValue": 20,
+        "description": "Largest task list the panel will render at once."
+      }
+    ]
+  }
+}
