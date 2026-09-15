@@ -3,7 +3,7 @@
   "id": "david.singularity",
   "name": "Singularity App",
   "version": "1.0.0",
-  "author": "david",
+  "author": "davidsmorais",
   "license": "MIT",
   "description": "View and manage SingularityApp tasks from the Omarchy bar. Wears every Omarchy theme.",
   "kinds": ["service", "bar-widget", "panel"],

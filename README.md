@@ -1,12 +1,20 @@
-# SingularityApp Plugin for Omarchy
+# SingularityApp Plugin for [Omarchy](https://omarchy.org)
 
-**View and manage SingularityApp tasks from the Omarchy bar.** Wears every Omarchy theme.
+```text
+         .
+      \  |  /
+   ---- ◉ ----
+      /  |  \
+         '
+```
 
-![SingularityApp plugin](https://api.singularity-app.com/v2/logo?light=dark)
+**View and manage SingularityApp tasks from the [Omarchy](https://omarchy.org) bar.** Wears every [Omarchy](https://omarchy.org) theme.
+
+![SingularityApp plugin panel in Omarchy](omarchy-singularity.png)
 
 ## Overview
 
-The SingularityApp plugin integrates [SingularityApp](https://singularity-app.com) with your Omarchy workflow. It provides:
+The SingularityApp plugin integrates [SingularityApp](https://singularity-app.com) with your [Omarchy](https://omarchy.org) workflow. It provides:
 
 - **Bar widget**: Shows today's open task count in the Omarchy bar
 - **Floating panel**: Full daily task planner with create, edit, and completion actions
@@ -16,7 +24,7 @@ The SingularityApp plugin integrates [SingularityApp](https://singularity-app.co
 
 ### Bar Widget
 
-- Displays task count as an icon in the Omarchy bar
+- Displays task count as an icon in the [Omarchy](https://omarchy.org) bar
 - Click to open the task panel
 - Right-click to toggle the panel
 - Tooltip shows task count or status
@@ -48,15 +56,23 @@ The SingularityApp plugin integrates [SingularityApp](https://singularity-app.co
 
 ## Installation
 
-1. Place the `david.singularity` directory in your Omarchy plugins directory
+Via the [Omarchy](https://omarchy.org) plugin manager:
+
+```bash
+omarchy plugin add https://github.com/davidsmorais/omarchy-singularity-app
+```
+
+Or manually:
+
+1. Place the `david.singularity` directory in your [Omarchy](https://omarchy.org) plugins directory
    ```bash
    # Typical location
    ~/.config/omarchy/plugins/david.singularity/
    ```
 
-2. Ensure the plugin is loaded in your Omarchy configuration
+2. Ensure the plugin is loaded in your [Omarchy](https://omarchy.org) configuration
 
-3. Restart Omarchy or reload plugins
+3. Restart [Omarchy](https://omarchy.org) or reload plugins
 
 ## Configuration
 
@@ -133,9 +149,12 @@ No build step required - QML files are interpreted at runtime. Modify QML files 
 
 ## License
 
-MIT - Copyright (c) david
+MIT - Copyright (c) [davidsmorais](https://github.com/davidsmorais)
 
 ## References
 
+- This plugin: https://github.com/davidsmorais/omarchy-singularity-app
+- Author: https://github.com/davidsmorais
 - SingularityApp API: https://api.singularity-app.com/v2
-- Omarchy documentation: https://omarchy.dev
+- [Omarchy](https://omarchy.org): https://omarchy.org
+- [Omarchy](https://omarchy.org) on GitHub: https://github.com/omacom/omarchy
