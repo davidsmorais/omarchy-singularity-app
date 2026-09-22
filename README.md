@@ -11,6 +11,7 @@
 **View and manage SingularityApp tasks from the [Omarchy](https://omarchy.org) bar.** Wears every [Omarchy](https://omarchy.org) theme.
 
 ![SingularityApp plugin panel in Omarchy](omarchy-singularity.png)
+![Agenda tab: drag tasks onto an hour to schedule them](agenda.png)
 
 ## Overview
 

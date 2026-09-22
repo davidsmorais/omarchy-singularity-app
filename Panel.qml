@@ -440,7 +440,7 @@ Item {
 						color: root.themeAccent
 						Text {
 							anchors.centerIn: parent
-							text: ""
+							text: ""
 							color: root.themeBg
 							font.family: "JetBrainsMono Nerd Font"
 							font.pixelSize: 16
