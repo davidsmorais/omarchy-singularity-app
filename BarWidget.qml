@@ -25,9 +25,9 @@ BarWidget {
     return "Singularity App — " + taskCount + " task" + (taskCount === 1 ? "" : "s") + " for today"
   }
 
-  property bool loading: false
-  property string error: ""
-  property bool hasToken: (settings.apiToken || "") !== ""
+  readonly property bool loading: singularity ? singularity.loading : false
+  readonly property string error: singularity ? singularity.error : ""
+  readonly property bool hasToken: (settings.apiToken || "") !== ""
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -45,18 +45,28 @@ BarWidget {
 
   onSettingsChanged: {
     if (singularity) singularity.settings = normalizedSettings()
-    if (hasToken) {
-      error = ""
-      if (singularity) singularity.refresh()
-    }
+    if (hasToken && singularity) singularity.refresh()
   }
 
   onSingularityChanged: {
     if (singularity) {
       singularity.settings = normalizedSettings()
-      loading = singularity.loading
-      error = singularity.error
       if (hasToken) singularity.refresh()
+    }
+  }
+
+  // serviceFor() is not reactive when the service finishes loading asynchronously.
+  Timer {
+    interval: 200
+    repeat: true
+    running: root.bar && root.bar.shell && !attached
+    property bool attached: false
+    onTriggered: {
+      var svc = root.bar.shell.serviceFor("david.singularity")
+      if (!svc) return
+      svc.settings = root.normalizedSettings()
+      if (root.hasToken) svc.refresh()
+      attached = true
     }
   }
 

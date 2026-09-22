@@ -1,293 +1,21 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import Quickshell
-import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// SingularityApp panel: daily task planner for Omarchy.
-// Shows today's tasks, quick actions (complete / postpone / cancel / schedule),
-// and a rich create form with project, tags, date and time.
+// SingularityApp panel for Omarchy.
+//   List tab   - overdue / today / undated tasks, sorted by due date and time,
+//                every row showing its date. Quick add, complete, postpone, etc.
+//   Agenda tab - a day timeline. Drag a task from "To schedule" (or move an
+//                existing block) onto an hour to set its due date and hour in
+//                SingularityApp as a 1-hour block.
 //
 // Summon with:  omarchy-shell shell summon david.singularity '{}'
-
+//               omarchy-shell shell summon david.singularity '{"tab":"agenda"}'
 Item {
 	id: root
-
-	component TaskRowDelegate: Rectangle {
-		id: taskRow
-		required property var modelData
-		width: parent.width
-		color: "transparent"
-		property var task: modelData
-		property bool taskDone: root.isTaskDone(task)
-		property bool expanded: root.expandedTaskId === task.id
-		height: taskContent.implicitHeight + (expanded ? expandedContent.implicitHeight + Style.space(4) : 0)
-
-		// Main task row
-		Column {
-			id: taskContent
-			width: parent.width - Style.space(12)
-			anchors.left: parent.left
-			anchors.leftMargin: Style.space(12)
-			spacing: Style.space(2)
-
-			Row {
-				width: parent.width
-				spacing: Style.space(6)
-
-				// Complete checkbox
-				Rectangle {
-					id: taskCheck
-					width: 18
-					height: 18
-					radius: 4
-					color: taskDone ? root.themeAccent : "transparent"
-					border.color: taskDone ? root.themeAccent : root.themeMuted
-					border.width: 1.5
-
-					Text {
-						anchors.centerIn: parent
-						visible: taskDone
-						text: "\u2713"
-						color: root.themeBg
-						font.pixelSize: 11
-						font.bold: true
-					}
-
-					MouseArea {
-						anchors.fill: parent
-						cursorShape: Qt.PointingHandCursor
-						onClicked: {
-							if (taskDone) root.uncompleteTask(task.id)
-							else root.completeTask(task.id)
-						}
-					}
-				}
-
-				Item {
-					width: parent.width - 24
-					height: taskInfoColumn.implicitHeight
-					Column {
-						id: taskInfoColumn
-						width: parent.width
-						spacing: 1
-
-						// Title row
-						Row {
-							width: parent.width
-							spacing: Style.space(6)
-
-							Text {
-								text: task.title || "Untitled task"
-								color: taskDone ? root.themeMuted : root.themeFg
-								font.family: root.fontFamily
-								font.pixelSize: Style.font.body
-								font.bold: !taskDone
-								font.strikeout: taskDone
-								elide: Text.ElideRight
-								width: parent.width - timeLabel.implicitWidth - dateLabel.implicitWidth - projectLabel.implicitWidth - Style.space(12)
-							}
-
-							// Time
-							Text {
-								id: timeLabel
-								text: root.taskHasTime(task) ? root.formatTime(task) : ""
-								color: root.themeMuted
-								font.family: root.fontFamily
-								font.pixelSize: Style.font.caption
-							}
-
-							// Due date
-							Text {
-								id: dateLabel
-								text: root.dateLabelText(task)
-								color: root.isOverdue(task) ? root.themeUrgent : root.themeMuted
-								font.family: root.fontFamily
-								font.pixelSize: Style.font.caption
-								font.bold: root.isOverdue(task)
-							}
-
-							// Project indicator
-							Text {
-								id: projectLabel
-								text: root.getTaskProject(task) ? "\u00B7 " + root.getTaskProject(task).title : ""
-								color: root.getTaskProject(task) ? root.getTaskProject(task).color : root.themeMuted
-								font.family: root.fontFamily
-								font.pixelSize: Style.font.caption
-							}
-						}
-
-						// Tags
-						Row {
-							visible: root.getTaskTags(task).length > 0
-							width: parent.width
-							spacing: Style.space(3)
-							Text {
-								text: "\u2002"
-								color: "transparent"
-								font.pixelSize: 1
-							}
-							Repeater {
-								model: root.getTaskTags(task)
-								Text {
-									text: "#" + modelData.title
-									color: modelData.color !== "" ? modelData.color : root.themeMuted
-									font.family: root.fontFamily
-									font.pixelSize: Style.font.caption
-								}
-							}
-						}
-					}
-				}
-			}
-
-			// Expand button
-			Text {
-				text: "\u25BC"
-				color: root.themeMuted
-				font.family: root.fontFamily
-				font.pixelSize: Style.font.caption
-				visible: !taskDone
-				width: 30
-				height: 20
-				anchors.right: parent.right
-				anchors.rightMargin: Style.space(12)
-				MouseArea {
-					anchors.fill: parent
-					cursorShape: Qt.PointingHandCursor
-					onClicked: root.expandTask(task.id)
-				}
-			}
-
-			// Divider
-			Rectangle {
-				width: parent.width
-				height: 1
-				color: root.lineColor
-				opacity: 0.4
-			}
-		}
-
-		// Expanded actions panel
-		Column {
-			id: expandedContent
-			visible: expanded
-			width: parent.width
-			anchors.left: parent.left
-			anchors.leftMargin: Style.space(12)
-			spacing: Style.space(4)
-			opacity: expanded ? 1 : 0
-
-			// Animate in
-			Behavior on opacity { NumberAnimation { duration: 120 } }
-
-			Rectangle {
-				width: parent.width
-				height: expandedActionsColumn.implicitHeight + Style.space(16)
-				radius: Style.cornerRadius
-				color: root.surfaceBg
-				border.color: root.lineColor
-				border.width: 1
-
-				Column {
-					id: expandedActionsColumn
-					anchors.centerIn: parent
-					width: parent.width - Style.space(16)
-					spacing: Style.space(6)
-
-					// Quick actions
-					Row {
-						width: parent.width
-						spacing: Style.space(6)
-
-						Button {
-							width: 100
-							text: taskDone ? "Reopen" : "Done"
-							foreground: taskDone ? root.themeMuted : root.themeAccent
-							fontSize: Style.font.caption
-							onClicked: taskDone ? root.uncompleteTask(task.id) : root.completeTask(task.id)
-						}
-
-						Button {
-							width: 100
-							text: "Tomorrow"
-							foreground: root.themeFg
-							fontSize: Style.font.caption
-							onClicked: root.postponeTask(task.id)
-						}
-
-						Button {
-							width: 100
-							text: "Cancel"
-							foreground: root.themeUrgent
-							fontSize: Style.font.caption
-							onClicked: root.cancelTask(task.id)
-						}
-
-						Button {
-							width: parent.width - 300
-							text: root.taskHasTime(task) ? "Change time\u2026" : "Schedule\u2026"
-							foreground: root.themeFg
-							fontSize: Style.font.caption
-							onClicked: {
-								// Show time picker for this task
-								root.showTimePicker = true
-								root.expandedTaskId = task.id
-							}
-						}
-					}
-
-					// Time picker
-					Row {
-						visible: root.showTimePicker
-						width: parent.width
-						spacing: Style.space(4)
-
-						Text {
-							text: "Set time for today"
-							color: root.themeFg
-							font.family: root.fontFamily
-							font.pixelSize: Style.font.caption
-						}
-
-						Repeater {
-							model: root.timePresets
-
-							Button {
-								width: 60
-								text: modelData.label
-								foreground: modelData.value === "" ? root.themeMuted : root.themeFg
-								fontSize: Style.font.caption
-								selected: root.formatTime(task) === modelData.value || (modelData.value === "" && !root.taskHasTime(task))
-								onClicked: {
-									root.scheduleTask(task.id, modelData.value)
-									root.showTimePicker = false
-								}
-							}
-						}
-
-						Button {
-							width: 60
-							text: "\u2715"
-							foreground: root.themeMuted
-							fontSize: Style.font.caption
-							onClicked: root.showTimePicker = false
-						}
-					}
-
-					// Delete button
-					Button {
-						width: parent.width
-						text: "Delete task"
-						foreground: root.themeUrgent
-						fontSize: Style.font.caption
-						onClicked: root.deleteTask(task.id)
-					}
-				}
-			}
-		}
-	}
 
 	property var bar: null
 	property var shell: null
@@ -298,12 +26,12 @@ Item {
 
 	// ── Panel state ───────────────────────────────────────────────────────
 	property bool opened: false
-	property bool popoutSwitchClosing: false
+	property string tab: "list"
 	property bool addingTask: false
 	property string newTitle: ""
 	property string newNote: ""
 	property int newPriority: 1
-	property string newDate: ""
+	property string newDay: "today"   // today | tomorrow | none
 	property string newTime: ""
 	property string newProjectId: ""
 	property var newTags: []
@@ -311,28 +39,33 @@ Item {
 	property string panelSuccess: ""
 	property string tokenInput: ""
 
-	// Task row: expanding action panel
-	property var expandedTaskId: ""
+	// List tab: which row is expanded, and which row shows the time picker.
+	property string expandedTaskId: ""
+	property string timePickerTaskId: ""
 
-	// Time presets for scheduling
-	readonly property var timePresets: [
-		{ label: "9:00",  value: "09:00" },
-		{ label: "10:00", value: "10:00" },
-		{ label: "11:00", value: "11:00" },
-		{ label: "12:00", value: "12:00" },
-		{ label: "13:00", value: "13:00" },
-		{ label: "14:00", value: "14:00" },
-		{ label: "15:00", value: "15:00" },
-		{ label: "16:00", value: "16:00" },
-		{ label: "17:00", value: "17:00" },
-		{ label: "18:00", value: "18:00" },
-		{ label: "19:00", value: "19:00" },
-		{ label: "20:00", value: "20:00" },
-		{ label: "21:00", value: "21:00" },
-		{ label: "No time", value: "" }
-	]
+	// Agenda tab
+	readonly property real hourHeight: 52
+	readonly property real gutterWidth: 52
+	property string agendaDay: ""
+	property var dragTask: null
+	property bool dragging: false
+	property real dragX: 0
+	property real dragY: 0
+	property int hoverHour: -1
+	property int autoScroll: 0
 
-	// ── Settings popup ─────────────────────────────────────────────────────
+	// Time presets for scheduling (value "" means "no time").
+	readonly property var timePresets: {
+		var out = []
+		for (var h = 6; h <= 22; h++) {
+			var s = (h < 10 ? "0" : "") + h + ":00"
+			out.push({ label: s, value: s })
+		}
+		return out
+	}
+	readonly property var timeOptions: [{ label: "No time", value: "" }].concat(timePresets)
+
+	// ── Settings popup ────────────────────────────────────────────────────
 	property bool showSettings: false
 	property string settingToken: ""
 	property int settingRefreshMinutes: 5
@@ -350,18 +83,13 @@ Item {
 
 	function saveAllSettings() {
 		if (!service) return
-		if (root.settingToken !== service.settings.apiToken) {
-			service.saveSetting("apiToken", root.settingToken)
-		}
-		if (root.settingRefreshMinutes !== parseInt(String(service.settings.refreshMinutes || 5), 10)) {
+		if (root.settingToken !== service.settings.apiToken) service.saveSetting("apiToken", root.settingToken)
+		if (root.settingRefreshMinutes !== parseInt(String(service.settings.refreshMinutes || 5), 10))
 			service.saveSetting("refreshMinutes", String(root.settingRefreshMinutes))
-		}
-		if (root.settingMaxTasks !== parseInt(String(service.settings.maxTasks || 50), 10)) {
+		if (root.settingMaxTasks !== parseInt(String(service.settings.maxTasks || 50), 10))
 			service.saveSetting("maxTasks", String(root.settingMaxTasks))
-		}
-		if (root.settingShowCompleted !== (service.settings.showCompleted || "off")) {
+		if (root.settingShowCompleted !== (service.settings.showCompleted || "off"))
 			service.saveSetting("showCompleted", root.settingShowCompleted)
-		}
 		root.showSettings = false
 	}
 
@@ -372,8 +100,7 @@ Item {
 	readonly property color themeMuted: Color.muted
 	readonly property color themeUrgent: Color.urgent
 	readonly property color surfaceBg: Qt.rgba(themeBg.r, themeBg.g, themeBg.b, 0.96)
-	readonly property color lineColor: Qt.rgba(
-		themeFg.r * 0.08, themeFg.g * 0.08, themeFg.b * 0.08, 1)
+	readonly property color lineColor: Qt.rgba(themeFg.r, themeFg.g, themeFg.b, 0.14)
 	readonly property string fontFamily: {
 		var families = Qt.fontFamilies()
 		if (families.indexOf("JetBrains Mono") >= 0) return "JetBrains Mono"
@@ -381,21 +108,28 @@ Item {
 		return families[0] || "sans-serif"
 	}
 
-	readonly property string todayDisplay: Qt.formatDate(new Date(), "dddd, d MMMM")
-
-	readonly property int maxTasks: parseInt(String(settings.maxTasks || 50), 10) || 50
+	readonly property string todayDisplay: Qt.formatDate(service ? service.now : new Date(), "dddd, d MMMM")
 
 	// ── Task helpers ──────────────────────────────────────────────────────
+	function safeColor(c, fallback) {
+		return (typeof c === "string" && /^#[0-9a-fA-F]{3,8}$/.test(c)) ? c : fallback
+	}
+
 	function getTaskProject(task) {
-		if (!task || !task.projectId) return null
+		if (!task || !task.projectId || !service) return null
 		for (var i = 0; i < service.projects.length; i++) {
 			if (service.projects[i].id === task.projectId) return service.projects[i]
 		}
 		return null
 	}
 
+	function projectColor(task) {
+		var p = getTaskProject(task)
+		return p ? safeColor(p.color, themeAccent) : themeAccent
+	}
+
 	function getTaskTags(task) {
-		if (!task || !task.tags) return []
+		if (!task || !task.tags || !service) return []
 		var result = []
 		for (var i = 0; i < task.tags.length; i++) {
 			for (var j = 0; j < service.tags.length; j++) {
@@ -408,63 +142,59 @@ Item {
 		return result
 	}
 
-	function formatTime(task) {
-		if (!task.start || task.start === "") return ""
-		var time = task.start.slice(11, 16)
-		if (time === "00:00") return ""
-		return time
-	}
-
-	function priorityLabel(p) {
-		if (p === 0) return "High"
-		if (p === 2) return "Low"
-		return "Normal"
-	}
-
 	function priorityColor(p) {
 		if (p === 0) return themeUrgent
 		if (p === 2) return themeAccent
 		return themeMuted
 	}
 
-	function taskHasTime(task) {
-		if (!task.start || task.start === "") return false
-		var time = task.start.slice(11, 16)
-		return time !== "00:00"
+	function isDone(task) { return service ? service.isDone(task) : false }
+	function isOverdue(task) { return service ? service.isOverdue(task) : false }
+
+	function dayText(key) {
+		if (!service) return key
+		if (key === service.todayIso) return "Today"
+		if (key === service.tomorrowIso) return "Tomorrow"
+		var d = service.localDate(key)
+		var sameYear = d.getFullYear() === service.now.getFullYear()
+		return Qt.formatDate(d, sameYear ? "ddd d MMM" : "d MMM yyyy")
 	}
 
-	function isTaskDone(task) {
-		return task.complete === 1 || task.journalDate || task.removed === true
+	// "Overdue · Tue 15 Sep · 09:00", "Today · 14:30", "Tomorrow", "No date"
+	function dueLabel(task) {
+		if (!service) return ""
+		var key = service.dayKey(task)
+		if (key === "") return "No date"
+		var s = dayText(key)
+		if (service.hasTime(task)) {
+			s += " · " + service.timeText(task)
+			if (task.timeLength > 0) s += "–" + endTimeText(task)
+		}
+		if (isOverdue(task)) s = "Overdue · " + s
+		return s
 	}
 
-	function isOverdue(task) {
-		if (!task || !task.start || task.start === "") return false
-		if (!service) return false
-		return task.start.slice(0, 10) < service.todayIso
+	function endTimeText(task) {
+		var d = service.startDate(task)
+		var e = new Date(d.getTime() + task.timeLength * 60000)
+		return service.pad2(e.getHours()) + ":" + service.pad2(e.getMinutes())
 	}
 
-	function formatDateShort(task) {
-		if (!task || !task.start || task.start === "") return ""
-		var dateStr = task.start.slice(0, 10)
-		var d = new Date(dateStr + "T00:00:00Z")
-		if (isNaN(d.getTime())) return dateStr
-		return Qt.formatDate(d, "d MMM")
-	}
-
-	function dateLabelText(task) {
-		if (!task || !task.start || task.start === "") return ""
-		if (root.isOverdue(task)) return "Overdue \u00B7 " + root.formatDateShort(task)
-		if (task.start.slice(0, 10) === service.todayIso) return "Today"
-		return root.formatDateShort(task)
+	function dueColor(task) {
+		if (isOverdue(task)) return themeUrgent
+		if (service && service.dayKey(task) === "") return themeMuted
+		return themeMuted
 	}
 
 	// ── Panel lifecycle ───────────────────────────────────────────────────
 	function openPanel() {
 		opened = true
+		if (service) service.openPanel()
 	}
 
 	function close() {
 		opened = false
+		dragCancel()
 		if (service) service.closePanel()
 	}
 
@@ -477,8 +207,8 @@ Item {
 	function open(payloadJson) {
 		var payload = ({})
 		try { payload = JSON.parse(String(payloadJson || "{}")) || ({}) } catch (e) {}
-		opened = true
-		if (service) service.openPanel()
+		if (payload.tab === "agenda" || payload.tab === "list") root.tab = payload.tab
+		openPanel()
 	}
 
 	function refresh() {
@@ -487,30 +217,25 @@ Item {
 		panelSuccess = ""
 	}
 
+	// ── Add task ──────────────────────────────────────────────────────────
 	function cancelAdd() {
 		addingTask = false
 		panelError = ""
 	}
 
-	// ── Add task ──────────────────────────────────────────────────────────
 	function addTask() {
 		var title = newTitle.trim()
 		if (!title) { panelError = "Task title is required"; return }
+		if (!service) return
 		panelError = ""
 		panelSuccess = ""
-		var priority = newPriority
-		var startDate = newDate.trim() || (service ? service.todayIso : "")
-		var time = newTime.trim()
-		if (time !== "") {
-			startDate = startDate + "T" + time + ":00.000Z"
-		}
-		var projectId = newProjectId || ""
-		var tags = newTags ? newTags.slice() : []
-		if (service) service.addTask(title, newNote, priority, startDate, projectId, tags)
+		var day = newDay === "today" ? service.todayIso : (newDay === "tomorrow" ? service.tomorrowIso : "")
+		service.addTask(title, newNote, newPriority, day, newProjectId || "",
+			newTags ? newTags.slice() : [], day !== "" ? newTime : "")
 		newTitle = ""
 		newNote = ""
 		newPriority = 1
-		newDate = ""
+		newDay = "today"
 		newTime = ""
 		newProjectId = ""
 		newTags = []
@@ -548,6 +273,7 @@ Item {
 		if (service) service.scheduleForToday(taskId, timeValue)
 		panelError = ""
 		expandedTaskId = ""
+		timePickerTaskId = ""
 	}
 
 	function deleteTask(taskId) {
@@ -557,840 +283,1318 @@ Item {
 	}
 
 	function expandTask(taskId) {
-		if (expandedTaskId === taskId) expandedTaskId = ""
-		else expandedTaskId = taskId
+		expandedTaskId = expandedTaskId === taskId ? "" : taskId
+		timePickerTaskId = ""
+	}
+
+	// ── Agenda ────────────────────────────────────────────────────────────
+	readonly property string currentAgendaDay: agendaDay !== "" ? agendaDay : (service ? service.todayIso : "")
+
+	function shiftAgendaDay(n) {
+		if (!service) return
+		agendaDay = service.isoDay(service.addDays(service.localDate(currentAgendaDay), n))
+		Qt.callLater(scrollAgendaToDefault)
+	}
+
+	function goToToday() {
+		agendaDay = ""
+		Qt.callLater(scrollAgendaToDefault)
+	}
+
+	function scrollAgendaToDefault() {
+		if (!service) return
+		var hour = currentAgendaDay === service.todayIso ? Math.max(0, service.now.getHours() - 1) : 7
+		agendaFlick.contentY = Math.max(0, Math.min(agendaFlick.contentHeight - agendaFlick.height, hour * hourHeight))
+	}
+
+	// Timed tasks of the selected day laid out in side-by-side lanes when they overlap.
+	readonly property var agendaBlocks: {
+		if (!service) return []
+		var timed = service.tasksForDay(currentAgendaDay).filter(function(t) { return service.hasTime(t) })
+		var items = timed.map(function(t) {
+			var d = service.startDate(t)
+			var s = d.getHours() * 60 + d.getMinutes()
+			var len = Math.max(30, t.timeLength > 0 ? t.timeLength : 60)
+			return { task: t, start: s, end: Math.min(24 * 60, s + len), lane: 0, lanes: 1 }
+		})
+		items.sort(function(a, b) { return a.start - b.start })
+		var cluster = [], laneEnds = [], clusterEnd = -1
+		function flush() {
+			for (var k = 0; k < cluster.length; k++) cluster[k].lanes = laneEnds.length
+			cluster = []; laneEnds = []
+		}
+		for (var i = 0; i < items.length; i++) {
+			var it = items[i]
+			if (cluster.length > 0 && it.start >= clusterEnd) flush()
+			var lane = 0
+			while (lane < laneEnds.length && laneEnds[lane] > it.start) lane++
+			laneEnds[lane] = it.end
+			it.lane = lane
+			clusterEnd = cluster.length === 0 ? it.end : Math.max(clusterEnd, it.end)
+			cluster.push(it)
+		}
+		flush()
+		return items
+	}
+
+	readonly property var scheduleQueue: service ? service.tasksToSchedule(currentAgendaDay) : []
+
+	// Drag and drop is hit-tested against the timeline geometry rather than
+	// using DropAreas, so it behaves the same for sidebar chips and blocks.
+	function dragMove(task, pt) {
+		dragTask = task
+		dragging = true
+		dragX = pt.x
+		dragY = pt.y
+		updateHover()
+	}
+
+	function updateHover() {
+		var q = dragLayer.mapToItem(agendaFlick, dragX, dragY)
+		if (tab === "agenda" && q.x >= 0 && q.x <= agendaFlick.width && q.y >= 0 && q.y <= agendaFlick.height) {
+			hoverHour = Math.max(0, Math.min(23, Math.floor((q.y + agendaFlick.contentY) / hourHeight)))
+			autoScroll = q.y < 28 ? -1 : (q.y > agendaFlick.height - 28 ? 1 : 0)
+		} else {
+			hoverHour = -1
+			autoScroll = 0
+		}
+	}
+
+	function dragDrop() {
+		if (dragging && dragTask && hoverHour >= 0 && service) {
+			service.scheduleAt(dragTask.id, currentAgendaDay, hoverHour)
+			panelSuccess = "Scheduled for " + dayText(currentAgendaDay) + " at " + service.pad2(hoverHour) + ":00"
+		}
+		dragCancel()
+	}
+
+	function dragCancel() {
+		dragging = false
+		dragTask = null
+		hoverHour = -1
+		autoScroll = 0
+	}
+
+	Timer {
+		interval: 30
+		repeat: true
+		running: root.dragging && root.autoScroll !== 0
+		onTriggered: {
+			var max = Math.max(0, agendaFlick.contentHeight - agendaFlick.height)
+			agendaFlick.contentY = Math.max(0, Math.min(max, agendaFlick.contentY + root.autoScroll * 12))
+			root.updateHover()
+		}
 	}
 
 	// ── Window ────────────────────────────────────────────────────────────
-	property int windowWidth: 720
-	property int windowHeight: Math.max(520, 480)
-
 	FloatingWindow {
 		id: window
 		title: "SingularityApp"
-		implicitWidth: windowWidth
-		implicitHeight: windowHeight
-		minimumSize: Qt.size(500, 400)
+		implicitWidth: 980
+		implicitHeight: 700
+		minimumSize: Qt.size(720, 520)
 		color: root.themeBg
 		visible: root.opened
 
-		onClosing: {
-			// Persist any pending token entered in the inline setup box so it
-			// survives a shell restart even if the user closes the panel without
-			// explicitly pressing Save inside the token field.
-			if (service && root.tokenInput.trim() !== "") {
-				service.saveApiToken(root.tokenInput.trim())
+		// Keep `opened` honest when the window manager closes the window, so
+		// the next summon or toggle works. Also persists a token typed into the
+		// inline setup box if the window closes without pressing Save.
+		onVisibleChanged: {
+			if (visible) {
+				Qt.callLater(function() { content.forceActiveFocus() })
+				return
+			}
+			if (root.service && root.tokenInput.trim() !== "") {
+				root.service.saveApiToken(root.tokenInput.trim())
 				root.tokenInput = ""
 			}
+			if (root.opened) root.close()
 		}
 
-		onVisibleChanged: if (visible) Qt.callLater(function() { contentColumn.forceActiveFocus() })
-
-		// ── Panel content ─────────────────────────────────────────────────────
-		Column {
-			id: contentColumn
-			focus: true
+		Item {
+			id: content
 			anchors.fill: parent
-			anchors.margins: Style.space(16)
-			spacing: Style.space(8)
+			focus: true
 
-			// ── Header ──────────────────────────────────────────────────────────
-			Row {
-				width: parent.width
+			Keys.onEscapePressed: {
+				if (root.dragging) root.dragCancel()
+				else if (root.showSettings) root.showSettings = false
+				else if (root.addingTask) root.cancelAdd()
+				else root.close()
+			}
+
+			ColumnLayout {
+				anchors.fill: parent
+				anchors.margins: Style.space(16)
 				spacing: Style.space(8)
 
-				Item {
-					width: 32
-					height: 32
+				// ── Header ──────────────────────────────────────────────────
+				RowLayout {
+					Layout.fillWidth: true
+					spacing: Style.space(8)
+
 					Rectangle {
-						anchors.fill: parent
-						color: root.themeAccent
+						Layout.preferredWidth: 32
+						Layout.preferredHeight: 32
 						radius: 6
-						Canvas {
-							anchors.fill: parent
-							property real cx: width / 2
-							property real cy: height / 2
-							property real r: Math.min(width, height) / 2 - 2
-							onPaint: function() {
-								var ctx = getContext("2d")
-								ctx.clearRect(0, 0, width, height)
-								ctx.beginPath()
-								ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 1.5)
-								ctx.lineTo(cx + r * Math.cos(-Math.PI / 2 + Math.PI * 1.5), cy + r * Math.sin(-Math.PI / 2 + Math.PI * 1.5))
-								ctx.closePath()
-								ctx.fillStyle = themeBg
-								ctx.fill()
-								ctx.strokeStyle = themeBg
-								ctx.lineWidth = 2
-								ctx.stroke()
-							}
+						color: root.themeAccent
+						Text {
+							anchors.centerIn: parent
+							text: ""
+							color: root.themeBg
+							font.family: "JetBrainsMono Nerd Font"
+							font.pixelSize: 16
 						}
 					}
-				}
 
-				Column {
-					width: parent.width - 32 - closeButton.width - settingsButton.width - Style.space(8)
-					spacing: 1
-
-					Text {
-						text: "SingularityApp"
-						color: root.themeFg
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.subtitle
-						font.bold: true
-					}
-					Text {
-						text: service && service.todayCount > 0
-							? root.todayDisplay + " \u00B7 " + service.todayCount + " task" + (service.todayCount === 1 ? "" : "s")
-							: (service && service.todayCount === 0 && !service.loading ? "No tasks for today" : "Loading\u2026")
-						color: root.themeMuted
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.caption
-					}
-				}
-
-				Button {
-					id: closeButton
-					width: 32
-					height: 32
-					iconText: "\uF00C"
-					foreground: root.themeFg
-					tooltipText: "Close (Esc)"
-					onClicked: root.close()
-				}
-
-				// Settings gear button
-				Button {
-					width: 32
-					height: 32
-					iconText: "\uF013"
-					foreground: root.themeMuted
-					tooltipText: "Settings"
-					onClicked: {
-						root.showSettings = true
-						root.syncSettingsToControls()
-					}
-				}
-			}
-
-			Rectangle {
-				width: 1
-				height: 1
-				color: root.lineColor
-			}
-
-			// ── Panel error / success messages ──────────────────────────────────
-			Text {
-				text: panelError
-				color: root.themeUrgent
-				font.family: root.fontFamily
-				font.pixelSize: Style.font.caption
-				visible: panelError !== ""
-				anchors.margins: 0
-			}
-
-			Text {
-				text: panelSuccess
-				color: root.themeAccent
-				font.family: root.fontFamily
-				font.pixelSize: Style.font.caption
-				visible: panelSuccess !== ""
-				anchors.margins: 0
-			}
-
-			// ── API token setup ─────────────────────────────────────────────────
-			Rectangle {
-				width: parent.width
-				height: tokenSetupColumn.implicitHeight + Style.space(20)
-				visible: service && (!service.settings || service.settings.apiToken === "" || service.error !== "")
-				radius: Style.cornerRadius
-				color: root.surfaceBg
-				border.color: root.themeUrgent
-				border.width: 1
-
-				Column {
-					id: tokenSetupColumn
-					anchors.centerIn: parent
-					width: parent.width - Style.space(20)
-					spacing: Style.space(6)
-
-					Text {
-						width: parent.width
-						text: service && service.error !== "" ? service.error : "Add your SingularityApp API token to get started."
-						color: root.themeUrgent
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.caption
-						wrapMode: Text.WordWrap
+					ColumnLayout {
+						Layout.fillWidth: true
+						spacing: 1
+						Text {
+							text: "SingularityApp"
+							color: root.themeFg
+							font.family: root.fontFamily
+							font.pixelSize: Style.font.subtitle
+							font.bold: true
+						}
+						Text {
+							text: {
+								if (!root.service) return "Loading…"
+								var n = root.service.todayCount
+								if (root.service.loading && root.service.tasks.length === 0) return "Loading…"
+								return root.todayDisplay + " · " + (n === 0 ? "nothing due" : n + " to do")
+							}
+							color: root.themeMuted
+							font.family: root.fontFamily
+							font.pixelSize: Style.font.caption
+						}
 					}
 
-					Row {
-						width: parent.width
+					Button {
+						text: "List"
+						foreground: root.themeFg
+						selected: root.tab === "list"
+						onClicked: root.tab = "list"
+					}
+
+					Button {
+						text: "Agenda"
+						foreground: root.themeFg
+						selected: root.tab === "agenda"
+						onClicked: {
+							root.tab = "agenda"
+							Qt.callLater(root.scrollAgendaToDefault)
+						}
+					}
+
+					Button {
+						iconText: ""
+						foreground: root.themeMuted
+						tooltipText: "Settings"
+						onClicked: {
+							root.showSettings = true
+							root.syncSettingsToControls()
+						}
+					}
+
+					Button {
+						iconText: ""
+						foreground: root.themeFg
+						tooltipText: "Close (Esc)"
+						onClicked: root.close()
+					}
+				}
+
+				Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.lineColor }
+
+				// ── Messages ────────────────────────────────────────────────
+				Text {
+					Layout.fillWidth: true
+					visible: root.panelError !== ""
+					text: root.panelError
+					color: root.themeUrgent
+					font.family: root.fontFamily
+					font.pixelSize: Style.font.caption
+					wrapMode: Text.WordWrap
+				}
+
+				Text {
+					Layout.fillWidth: true
+					visible: root.panelSuccess !== ""
+					text: root.panelSuccess
+					color: root.themeAccent
+					font.family: root.fontFamily
+					font.pixelSize: Style.font.caption
+				}
+
+				// ── API token setup ─────────────────────────────────────────
+				Rectangle {
+					Layout.fillWidth: true
+					Layout.preferredHeight: tokenSetupColumn.implicitHeight + Style.space(20)
+					visible: root.service && (!root.service.settings || root.service.settings.apiToken === "" || root.service.error !== "")
+					radius: Style.cornerRadius
+					color: root.surfaceBg
+					border.color: root.themeUrgent
+					border.width: 1
+
+					ColumnLayout {
+						id: tokenSetupColumn
+						anchors.left: parent.left
+						anchors.right: parent.right
+						anchors.verticalCenter: parent.verticalCenter
+						anchors.margins: Style.space(10)
 						spacing: Style.space(6)
 
-						TextField {
-							id: tokenField
-							width: parent.width - saveTokenButton.width - Style.space(6)
-							placeholderText: "API token"
-							password: true
-							text: root.tokenInput
-							foreground: root.themeFg
-							placeholderTextColor: root.themeMuted
+						Text {
+							Layout.fillWidth: true
+							text: root.service && root.service.error !== "" ? root.service.error : "Add your SingularityApp API token to get started."
+							color: root.themeUrgent
 							font.family: root.fontFamily
-							font.pixelSize: Style.font.body
-							onTextChanged: root.tokenInput = text
-							Keys.onPressed: function(event) {
-								if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-									if (service && root.tokenInput.trim() !== "") {
-										service.saveApiToken(root.tokenInput.trim())
+							font.pixelSize: Style.font.caption
+							wrapMode: Text.WordWrap
+						}
+
+						RowLayout {
+							Layout.fillWidth: true
+							spacing: Style.space(6)
+
+							TextField {
+								Layout.fillWidth: true
+								placeholderText: "API token"
+								password: true
+								text: root.tokenInput
+								foreground: root.themeFg
+								font.family: root.fontFamily
+								font.pixelSize: Style.font.body
+								onTextChanged: root.tokenInput = text
+								Keys.onPressed: function(event) {
+									if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && root.service && root.tokenInput.trim() !== "") {
+										root.service.saveApiToken(root.tokenInput.trim())
+										root.tokenInput = ""
+									}
+								}
+							}
+
+							Button {
+								text: "Save"
+								foreground: root.themeAccent
+								selected: true
+								bordered: true
+								onClicked: {
+									if (root.service && root.tokenInput.trim() !== "") {
+										root.service.saveApiToken(root.tokenInput.trim())
 										root.tokenInput = ""
 									}
 								}
 							}
 						}
+					}
+				}
 
-						Button {
-							id: saveTokenButton
-							width: 70
-							text: "Save"
-							foreground: root.themeAccent
-							selected: true
-							bordered: true
-							onClicked: {
-								if (service && root.tokenInput.trim() !== "") {
-									service.saveApiToken(root.tokenInput.trim())
-									root.tokenInput = ""
+				// ── Body: List / Agenda ─────────────────────────────────────
+				Item {
+					Layout.fillWidth: true
+					Layout.fillHeight: true
+
+					// ════════════ LIST TAB ════════════
+					ColumnLayout {
+						anchors.fill: parent
+						visible: root.tab === "list"
+						spacing: Style.space(8)
+
+						// Add task
+						Rectangle {
+							Layout.fillWidth: true
+							Layout.preferredHeight: addColumn.implicitHeight + Style.space(20)
+							radius: Style.cornerRadius
+							color: root.surfaceBg
+							border.color: root.lineColor
+							border.width: 1
+
+							ColumnLayout {
+								id: addColumn
+								anchors.left: parent.left
+								anchors.right: parent.right
+								anchors.verticalCenter: parent.verticalCenter
+								anchors.margins: Style.space(10)
+								spacing: Style.space(6)
+
+								RowLayout {
+									Layout.fillWidth: true
+									visible: !root.addingTask
+									spacing: Style.space(8)
+									Button {
+										text: "+"
+										foreground: root.themeAccent
+										fontSize: Style.font.title
+										onClicked: {
+											root.addingTask = true
+											Qt.callLater(function() { titleField.forceActiveFocus() })
+										}
+									}
+									Text {
+										Layout.fillWidth: true
+										text: "Add a task"
+										color: root.themeMuted
+										font.family: root.fontFamily
+										font.pixelSize: Style.font.body
+									}
+								}
+
+								TextField {
+									id: titleField
+									Layout.fillWidth: true
+									visible: root.addingTask
+									placeholderText: "What needs to be done?"
+									text: root.newTitle
+									foreground: root.themeFg
+									font.family: root.fontFamily
+									font.pixelSize: Style.font.body
+									onTextChanged: root.newTitle = text
+									Keys.onPressed: function(event) {
+										if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.addTask()
+										else if (event.key === Qt.Key_Escape) { root.cancelAdd(); event.accepted = true }
+									}
+								}
+
+								RowLayout {
+									Layout.fillWidth: true
+									visible: root.addingTask
+									spacing: Style.space(6)
+
+									Dropdown {
+										Layout.preferredWidth: 170
+										showLabel: false
+										options: [{ value: "", label: "No project" }].concat(
+											root.service ? root.service.projects.map(function(p) { return { value: p.id, label: p.title } }) : [])
+										value: root.newProjectId
+										foreground: root.themeFg
+										accent: root.themeAccent
+										onChanged: function(v) { root.newProjectId = v }
+									}
+
+									MultiSelect {
+										Layout.preferredWidth: 170
+										showLabel: false
+										noSelectionText: "Tags…"
+										placeholderText: "Search tags..."
+										options: root.service ? root.service.tags.map(function(t) { return { value: t.id, label: t.title } }) : []
+										values: root.newTags
+										foreground: root.themeFg
+										accent: root.themeAccent
+										onChanged: function(vals) { root.newTags = vals }
+									}
+
+									Dropdown {
+										Layout.preferredWidth: 110
+										showLabel: false
+										enabled: root.newDay !== "none"
+										options: root.timeOptions
+										value: root.newTime
+										foreground: root.themeFg
+										accent: root.themeAccent
+										onChanged: function(v) { root.newTime = v }
+									}
+
+									Item { Layout.fillWidth: true }
+								}
+
+								RowLayout {
+									Layout.fillWidth: true
+									visible: root.addingTask
+									spacing: Style.space(4)
+
+									Repeater {
+										model: [{ v: "today", l: "Today" }, { v: "tomorrow", l: "Tomorrow" }, { v: "none", l: "No date" }]
+										Button {
+											text: modelData.l
+											foreground: root.themeFg
+											fontSize: Style.font.caption
+											selected: root.newDay === modelData.v
+											onClicked: root.newDay = modelData.v
+										}
+									}
+
+									Item { Layout.fillWidth: true }
+
+									Text {
+										text: "Priority"
+										color: root.themeMuted
+										font.family: root.fontFamily
+										font.pixelSize: Style.font.caption
+									}
+
+									Repeater {
+										model: [{ v: 0, l: "High" }, { v: 1, l: "Normal" }, { v: 2, l: "Low" }]
+										Button {
+											text: modelData.l
+											foreground: root.priorityColor(modelData.v)
+											fontSize: Style.font.caption
+											selected: root.newPriority === modelData.v
+											onClicked: root.newPriority = modelData.v
+										}
+									}
+								}
+
+								TextField {
+									Layout.fillWidth: true
+									visible: root.addingTask
+									placeholderText: "Note (optional)"
+									text: root.newNote
+									foreground: root.themeFg
+									font.family: root.fontFamily
+									font.pixelSize: Style.font.body
+									onTextChanged: root.newNote = text
+								}
+
+								RowLayout {
+									Layout.fillWidth: true
+									visible: root.addingTask
+									spacing: Style.space(6)
+
+									Button {
+										text: "Cancel"
+										foreground: root.themeFg
+										onClicked: root.cancelAdd()
+									}
+
+									Button {
+										Layout.fillWidth: true
+										text: "Add task"
+										foreground: root.themeAccent
+										selected: true
+										bordered: true
+										onClicked: root.addTask()
+									}
 								}
 							}
 						}
-					}
-				}
-			}
 
-			// ── Add task form ───────────────────────────────────────────────────
-			Rectangle {
-				width: parent.width
-				height: addTaskColumn.implicitHeight + Style.space(20)
-				radius: Style.cornerRadius
-				color: root.surfaceBg
-				border.color: root.lineColor
-				border.width: 1
+						// Task list
+						ScrollView {
+							id: listScroll
+							Layout.fillWidth: true
+							Layout.fillHeight: true
+							clip: true
+							contentWidth: availableWidth
 
-				Column {
-					id: addTaskColumn
-					anchors.centerIn: parent
-					width: parent.width - Style.space(20)
-					spacing: Style.space(6)
-
-					Row {
-						width: parent.width
-						spacing: Style.space(6)
-
-						// Toggle add form button
-						Button {
-							width: addingTask ? 0 : 32
-							height: 32
-							text: "+"
-							foreground: root.themeAccent
-							fontSize: Style.font.display
-							enabled: !addingTask
-							onClicked: addingTask = true
-						}
-
-						Item {
-							width: parent.width - (addingTask ? 0 : 32) - Style.space(8)
-							height: quickAddColumn.implicitHeight
 							Column {
-								id: quickAddColumn
-								width: parent.width
-								spacing: Style.space(4)
+								id: taskList
+								width: listScroll.availableWidth
+								spacing: Style.space(2)
 
 								Text {
-									text: addingTask ? "Add a task for today" : "Quick add"
+									visible: root.service && root.service.overdueTasks.length > 0
+									text: "Overdue"
+									color: root.themeUrgent
+									font.family: root.fontFamily
+									font.pixelSize: Style.font.body
+									font.bold: true
+								}
+								Repeater {
+									model: root.service ? root.service.overdueTasks : []
+									delegate: taskRowComponent
+								}
+
+								Text {
+									visible: root.service && root.service.todayTasks.length > 0
+									topPadding: Style.space(6)
+									text: "Today"
 									color: root.themeFg
 									font.family: root.fontFamily
 									font.pixelSize: Style.font.body
 									font.bold: true
 								}
-
-								Column {
-									width: parent.width
-									spacing: Style.space(6)
-									visible: addingTask
-
-									// Title input
-									TextField {
-										width: parent.width
-										placeholderText: "What needs to be done?"
-										text: root.newTitle
-										foreground: root.themeFg
-										placeholderTextColor: root.themeMuted
-										font.family: root.fontFamily
-										font.pixelSize: Style.font.body
-										onTextChanged: root.newTitle = text
-										Keys.onPressed: function(event) {
-											if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-												root.addTask()
-											} else if (event.key === Qt.Key_Escape) {
-												root.cancelAdd()
-											}
-										}
-									}
-
-									// Project + Tags row
-									Row {
-										width: parent.width
-										spacing: Style.space(6)
-
-										// Project dropdown
-										Dropdown {
-											width: 160
-											showLabel: false
-											options: [{ value: "", label: "No project" }].concat(
-												service ? service.projects.map(function(p) { return { value: p.id, label: p.title } }) : [])
-											value: root.newProjectId
-											foreground: root.themeFg
-											accent: root.themeAccent
-											onChanged: function(v) { root.newProjectId = v }
-										}
-
-										// Tags multi-select
-										MultiSelect {
-											width: 160
-											showLabel: false
-											noSelectionText: "Tags\u2026"
-											placeholderText: "Search tags..."
-											options: service ? service.tags.map(function(t) { return { value: t.id, label: t.title } }) : []
-											values: root.newTags
-											foreground: root.themeFg
-											accent: root.themeAccent
-											onChanged: function(vals) { root.newTags = vals }
-										}
-
-										Item {
-											width: parent.width - 160 - 120 - Style.space(24)
-											height: dateTimePriorityColumn.implicitHeight
-											Column {
-												id: dateTimePriorityColumn
-												width: parent.width
-												spacing: 2
-
-												// Date + Time row
-												Row {
-													width: parent.width
-													spacing: Style.space(6)
-
-													Row {
-														width: 130
-														spacing: Style.space(4)
-
-														Button {
-															width: 61
-															text: "Today"
-															foreground: root.themeFg
-															fontSize: Style.font.caption
-															selected: root.newDate === "" || (service && root.newDate === service.todayIso)
-															onClicked: root.newDate = service ? service.todayIso : ""
-														}
-
-														Button {
-															width: 61
-															text: "Tomorrow"
-															foreground: root.themeFg
-															fontSize: Style.font.caption
-															selected: service && root.newDate === service.tomorrowIso
-															onClicked: root.newDate = service ? service.tomorrowIso : ""
-														}
-													}
-
-													Item {
-														width: 100
-														height: timeColumn.implicitHeight
-														Column {
-															id: timeColumn
-															width: parent.width
-															spacing: 1
-															Text {
-																text: "Time"
-																color: root.themeMuted
-																font.family: root.fontFamily
-																font.pixelSize: Style.font.caption
-															}
-															Dropdown {
-																width: parent.width
-																showLabel: false
-																options: root.timePresets
-																value: root.newTime
-																foreground: root.themeFg
-																accent: root.themeAccent
-																onChanged: function(v) { root.newTime = v }
-															}
-														}
-													}
-
-													Item {
-														width: parent.width - 130 - 100 - Style.space(6)
-														height: priorityColumn.implicitHeight
-														Column {
-															id: priorityColumn
-															width: parent.width
-															spacing: 2
-															Text {
-																text: "Priority"
-																color: root.themeMuted
-																font.family: root.fontFamily
-																font.pixelSize: Style.font.caption
-															}
-															Row {
-																spacing: Style.space(4)
-																Repeater {
-																	model: [{ v: 0, l: "High" }, { v: 1, l: "Normal" }, { v: 2, l: "Low" }]
-																	Button {
-																		width: 52
-																		height: 26
-																		text: modelData.l
-																		foreground: root.priorityColor(modelData.v)
-																		fontSize: Style.font.caption
-																		selected: root.newPriority === modelData.v
-																		onClicked: root.newPriority = modelData.v
-																	}
-																}
-															}
-														}
-													}
-												}
-
-												// Note input
-												TextField {
-													width: parent.width
-													placeholderText: "Note (optional)"
-													text: root.newNote
-													foreground: root.themeFg
-													placeholderTextColor: root.themeMuted
-													font.family: root.fontFamily
-													font.pixelSize: Style.font.body
-													onTextChanged: root.newNote = text
-												}
-											}
-										}
-									}
-
-									// Add / Cancel buttons
-									Row {
-										width: parent.width
-										spacing: Style.space(6)
-
-										Button {
-											width: 80
-											text: "Cancel"
-											foreground: root.themeFg
-											enabled: addingTask
-											onClicked: root.cancelAdd()
-										}
-
-										Button {
-											width: parent.width - 80
-											text: "Add task"
-											foreground: root.themeAccent
-											selected: true
-											bordered: true
-											enabled: addingTask
-											onClicked: root.addTask()
-										}
-									}
+								Repeater {
+									model: root.service ? root.service.todayTasks : []
+									delegate: taskRowComponent
 								}
 
-								// Idle state: show a hint
 								Text {
-									visible: !addingTask
-									text: "Click + or press Enter to add a task"
+									visible: root.service && root.service.undatedTasks.length > 0
+									topPadding: Style.space(6)
+									text: "No date"
 									color: root.themeMuted
 									font.family: root.fontFamily
-									font.pixelSize: Style.font.caption
+									font.pixelSize: Style.font.body
+									font.bold: true
+								}
+								Repeater {
+									model: root.service ? root.service.undatedTasks : []
+									delegate: taskRowComponent
+								}
+
+								Text {
+									width: parent.width
+									topPadding: Style.space(24)
+									visible: root.service && !root.service.loading
+										&& root.service.overdueTasks.length + root.service.todayTasks.length + root.service.undatedTasks.length === 0
+									horizontalAlignment: Text.AlignHCenter
+									text: "Nothing due — add a task above"
+									color: root.themeMuted
+									font.family: root.fontFamily
+									font.pixelSize: Style.font.body
 								}
 							}
 						}
 					}
+
+					// ════════════ AGENDA TAB ════════════
+					RowLayout {
+						anchors.fill: parent
+						visible: root.tab === "agenda"
+						spacing: Style.space(12)
+
+						// To schedule (drag sources)
+						ColumnLayout {
+							Layout.preferredWidth: 270
+							Layout.fillHeight: true
+							spacing: Style.space(6)
+
+							Text {
+								text: "To schedule"
+								color: root.themeFg
+								font.family: root.fontFamily
+								font.pixelSize: Style.font.body
+								font.bold: true
+							}
+							Text {
+								Layout.fillWidth: true
+								text: "Drag a task onto an hour to set its due date and time."
+								color: root.themeMuted
+								font.family: root.fontFamily
+								font.pixelSize: Style.font.caption
+								wrapMode: Text.WordWrap
+							}
+
+							ScrollView {
+								id: queueScroll
+								Layout.fillWidth: true
+								Layout.fillHeight: true
+								clip: true
+								contentWidth: availableWidth
+
+								Column {
+									width: queueScroll.availableWidth
+									spacing: Style.space(4)
+
+									Repeater {
+										model: root.scheduleQueue
+										delegate: queueChipComponent
+									}
+
+									Text {
+										width: parent.width
+										topPadding: Style.space(16)
+										visible: root.scheduleQueue.length === 0
+										horizontalAlignment: Text.AlignHCenter
+										text: "Everything is scheduled"
+										color: root.themeMuted
+										font.family: root.fontFamily
+										font.pixelSize: Style.font.caption
+									}
+								}
+							}
+						}
+
+						Rectangle { Layout.preferredWidth: 1; Layout.fillHeight: true; color: root.lineColor }
+
+						// Day timeline
+						ColumnLayout {
+							Layout.fillWidth: true
+							Layout.fillHeight: true
+							spacing: Style.space(6)
+
+							RowLayout {
+								Layout.fillWidth: true
+								spacing: Style.space(6)
+
+								Button {
+									text: "‹"
+									foreground: root.themeFg
+									tooltipText: "Previous day"
+									onClicked: root.shiftAgendaDay(-1)
+								}
+								Button {
+									text: "Today"
+									foreground: root.themeFg
+									selected: root.service && root.currentAgendaDay === root.service.todayIso
+									onClicked: root.goToToday()
+								}
+								Button {
+									text: "›"
+									foreground: root.themeFg
+									tooltipText: "Next day"
+									onClicked: root.shiftAgendaDay(1)
+								}
+								Text {
+									Layout.fillWidth: true
+									leftPadding: Style.space(6)
+									text: root.service && root.currentAgendaDay !== ""
+										? Qt.formatDate(root.service.localDate(root.currentAgendaDay), "dddd, d MMMM yyyy") : ""
+									color: root.themeFg
+									font.family: root.fontFamily
+									font.pixelSize: Style.font.body
+									font.bold: true
+								}
+							}
+
+							Flickable {
+								id: agendaFlick
+								objectName: "agendaFlick"
+								Layout.fillWidth: true
+								Layout.fillHeight: true
+								clip: true
+								contentWidth: width
+								contentHeight: 24 * root.hourHeight
+								boundsBehavior: Flickable.StopAtBounds
+								ScrollBar.vertical: ScrollBar {}
+
+								Item {
+									id: timeline
+									width: agendaFlick.width
+									height: 24 * root.hourHeight
+
+									// Hour rows
+									Repeater {
+										model: 24
+										Item {
+											y: index * root.hourHeight
+											width: timeline.width
+											height: root.hourHeight
+											Text {
+												x: 0
+												y: -height / 2 + 1
+												width: root.gutterWidth - 8
+												horizontalAlignment: Text.AlignRight
+												visible: index > 0
+												text: (index < 10 ? "0" : "") + index + ":00"
+												color: root.themeMuted
+												font.family: root.fontFamily
+												font.pixelSize: Style.font.caption
+											}
+											Rectangle {
+												x: root.gutterWidth
+												width: parent.width - root.gutterWidth
+												height: 1
+												color: root.lineColor
+											}
+										}
+									}
+
+									// Drop target highlight
+									Rectangle {
+										visible: root.dragging && root.hoverHour >= 0
+										x: root.gutterWidth
+										y: root.hoverHour * root.hourHeight
+										width: timeline.width - root.gutterWidth
+										height: root.hourHeight
+										color: Qt.rgba(root.themeAccent.r, root.themeAccent.g, root.themeAccent.b, 0.22)
+										border.color: root.themeAccent
+										border.width: 1
+										Text {
+											anchors.left: parent.left
+											anchors.top: parent.top
+											anchors.margins: 4
+											text: (root.hoverHour < 10 ? "0" : "") + root.hoverHour + ":00 – "
+												+ (root.hoverHour + 1 < 10 ? "0" : "") + ((root.hoverHour + 1) % 24) + ":00"
+											color: root.themeAccent
+											font.family: root.fontFamily
+											font.pixelSize: Style.font.caption
+											font.bold: true
+										}
+									}
+
+									// Scheduled blocks
+									Repeater {
+										model: root.agendaBlocks
+										delegate: blockComponent
+									}
+
+									// Current time marker
+									Rectangle {
+										visible: root.service && root.currentAgendaDay === root.service.todayIso
+										x: root.gutterWidth
+										y: root.service ? (root.service.now.getHours() * 60 + root.service.now.getMinutes()) / 60 * root.hourHeight : 0
+										width: timeline.width - root.gutterWidth
+										height: 2
+										color: root.themeUrgent
+									}
+								}
+							}
+						}
+					}
+				}
+
+				// ── Footer ──────────────────────────────────────────────────
+				RowLayout {
+					Layout.fillWidth: true
+					spacing: Style.space(8)
+
+					Text {
+						Layout.fillWidth: true
+						text: root.service ? (root.service.loading ? "Refreshing…" : "Auto-refreshes every " + Math.round(root.service.refreshMs / 60000) + " min") : ""
+						color: root.themeMuted
+						font.family: root.fontFamily
+						font.pixelSize: Style.font.caption
+					}
+
+					Button {
+						text: "Refresh"
+						foreground: root.themeFg
+						onClicked: root.refresh()
+					}
+				}
+			}
+
+			// ── Settings popup ──────────────────────────────────────────────
+			Rectangle {
+				visible: root.showSettings
+				anchors.fill: parent
+				color: Qt.rgba(0, 0, 0, 0.45)
+				z: 10
+				MouseArea {
+					anchors.fill: parent
+					onClicked: root.showSettings = false
 				}
 			}
 
 			Rectangle {
-				width: 1
-				height: 1
-				color: root.lineColor
-			}
+				visible: root.showSettings
+				anchors.centerIn: parent
+				width: Math.min(parent.width - Style.space(32), 560)
+				height: settingsContent.implicitHeight + Style.space(32)
+				color: root.themeBg
+				radius: Style.cornerRadius
+				border.color: root.lineColor
+				border.width: 1
+				z: 11
 
-			// ── Task list ────────────────────────────────────────────────────────────────────
-			ScrollView {
-				id: taskScrollView
-				width: parent.width
-				height: parent.height - 40
-				clip: true
-				contentWidth: availableWidth
-				contentHeight: taskList.implicitHeight
+				MouseArea { anchors.fill: parent }
 
-				Column {
-					id: taskList
-					width: taskScrollView.availableWidth
-					spacing: Style.space(2)
+				ColumnLayout {
+					id: settingsContent
+					anchors.left: parent.left
+					anchors.right: parent.right
+					anchors.top: parent.top
+					anchors.margins: Style.space(16)
+					spacing: Style.space(12)
 
-					readonly property var overdueTasks: service
-						? service.sortTodayTasks(service.todayTasks.filter(function(t) { return root.isOverdue(t) })) : []
-					readonly property var todaysTasks: service
-						? service.sortTodayTasks(service.todayTasks.filter(function(t) { return !root.isOverdue(t) })) : []
-
-					Text {
-						visible: taskList.overdueTasks.length > 0
-						text: "Overdue"
-						color: root.themeUrgent
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.body
-						font.bold: true
+					RowLayout {
+						Layout.fillWidth: true
+						Text {
+							Layout.fillWidth: true
+							text: "Settings"
+							color: root.themeFg
+							font.family: root.fontFamily
+							font.pixelSize: Style.font.subtitle
+							font.bold: true
+						}
+						Button {
+							iconText: ""
+							foreground: root.themeMuted
+							tooltipText: "Close (Esc)"
+							onClicked: root.showSettings = false
+						}
 					}
 
-					Repeater {
-						model: taskList.overdueTasks
-						delegate: TaskRowDelegate {}
-					}
+					Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.lineColor }
 
-					Text {
-						text: "Today"
-						color: root.themeFg
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.body
-						font.bold: true
-					}
-
-					Repeater {
-						model: taskList.todaysTasks
-						delegate: TaskRowDelegate {}
-					}
-
-					// Empty state
-					Item {
-						width: parent.width
-						height: (service && service.todayTasks.length === 0 && !service.loading) ? emptyState.implicitHeight : 0
-
-						Column {
-							id: emptyState
-							width: parent.width
-							anchors.centerIn: parent
-							spacing: Style.space(6)
-							opacity: 0.6
-
+					ColumnLayout {
+						Layout.fillWidth: true
+						spacing: Style.space(6)
+						RowLayout {
+							Layout.fillWidth: true
+							spacing: Style.space(8)
 							Text {
-								text: "\uF044"
-								color: root.themeFg
-								font.family: "JetBrainsMono Nerd Font"
-								font.pixelSize: Style.font.display
-								anchors.horizontalCenter: parent.horizontalCenter
-							}
-
-							Text {
-								text: service && service.loading ? "Loading tasks\u2026" : "No tasks for today \u2014 add one above"
+								Layout.preferredWidth: 130
+								text: "API token"
 								color: root.themeFg
 								font.family: root.fontFamily
 								font.pixelSize: Style.font.body
-								anchors.horizontalCenter: parent.horizontalCenter
+								font.bold: true
+							}
+							TextField {
+								Layout.fillWidth: true
+								placeholderText: "Enter your API token"
+								password: true
+								text: root.settingToken
+								foreground: root.themeFg
+								font.family: root.fontFamily
+								font.pixelSize: Style.font.body
+								onTextChanged: root.settingToken = text
 							}
 						}
-					}
-				}
-			}
-
-			// ── Footer ──────────────────────────────────────────────────────────
-			Row {
-				width: parent.width
-				spacing: Style.space(8)
-
-				Item {
-					width: parent.width - refreshButton.width
-					height: refreshButton.height
-					Text {
-						text: service ? "Auto-refreshes every " + service.refreshMs / 60000 + " min" : ""
-						color: root.themeMuted
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.caption
-						anchors.verticalCenter: parent.verticalCenter
-					}
-				}
-
-				Button {
-					id: refreshButton
-					width: 80
-					text: "Refresh"
-					foreground: root.themeFg
-					onClicked: root.refresh()
-				}
-			}
-		}
-
-		// ── Settings popup overlay ─────────────────────────────────────────────────────
-		Rectangle {
-			id: settingsOverlay
-			visible: root.showSettings
-			anchors.fill: parent
-			color: Qt.rgba(0, 0, 0, 0.35)
-			z: 10
-			MouseArea {
-				anchors.fill: parent
-				onClicked: root.showSettings = false
-			}
-		}
-
-		Rectangle {
-			id: settingsCard
-			visible: root.showSettings
-			anchors.centerIn: parent
-			width: parent.width - Style.space(32)
-			color: root.surfaceBg
-			radius: Style.cornerRadius
-			border.color: root.lineColor
-			border.width: 1
-			z: 11
-
-			Column {
-				id: settingsContent
-				anchors.fill: parent
-				anchors.margins: Style.space(16)
-				spacing: Style.space(12)
-
-				// Header
-				Row {
-					width: parent.width
-					spacing: Style.space(8)
-
-					Text {
-						text: "Settings"
-						color: root.themeFg
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.subtitle
-						font.bold: true
-					}
-
-					Item {
-						fillWidth: true
-					}
-
-					Button {
-						width: 32
-						height: 32
-						iconText: "\uF00D"
-						foreground: root.themeMuted
-						tooltipText: "Close (Esc)"
-						onClicked: root.showSettings = false
-					}
-				}
-
-				Rectangle {
-					width: 1
-					height: 1
-					color: root.lineColor
-				}
-
-				// API Token
-				Column {
-					width: parent.width
-					spacing: Style.space(6)
-
-					Row {
-						width: parent.width
-						spacing: Style.space(8)
-
 						Text {
-							width: 120
-							text: "API token"
+							Layout.fillWidth: true
+							text: "Create one in SingularityApp under Personal account → API Access. Changes apply immediately."
+							color: root.themeMuted
+							font.family: root.fontFamily
+							font.pixelSize: Style.font.caption
+							wrapMode: Text.WordWrap
+						}
+					}
+
+					RowLayout {
+						Layout.fillWidth: true
+						spacing: Style.space(8)
+						Text {
+							Layout.preferredWidth: 130
+							text: "Refresh (min)"
 							color: root.themeFg
 							font.family: root.fontFamily
 							font.pixelSize: Style.font.body
 							font.bold: true
-							verticalAlignment: Text.AlignVCenter
 						}
-
-						TextField {
-							width: parent.width - 120
-							placeholderText: "Enter your API token"
-							password: true
-							text: root.settingToken
+						NumberField {
+							value: root.settingRefreshMinutes
+							from: 1
+							to: 60
+							stepSize: 1
 							foreground: root.themeFg
-							placeholderTextColor: root.themeMuted
+							accent: root.themeAccent
+							onModified: function(v) { root.settingRefreshMinutes = v }
+						}
+						Item { Layout.fillWidth: true }
+					}
+
+					RowLayout {
+						Layout.fillWidth: true
+						spacing: Style.space(8)
+						Text {
+							Layout.preferredWidth: 130
+							text: "Max tasks"
+							color: root.themeFg
 							font.family: root.fontFamily
 							font.pixelSize: Style.font.body
-							onTextChanged: root.settingToken = text
+							font.bold: true
 						}
+						NumberField {
+							value: root.settingMaxTasks
+							from: 5
+							to: 100
+							stepSize: 5
+							foreground: root.themeFg
+							accent: root.themeAccent
+							onModified: function(v) { root.settingMaxTasks = v }
+						}
+						Item { Layout.fillWidth: true }
 					}
 
-					Text {
-						width: parent.width
-						text: "Get your token from SingularityApp under Account \u2192 API Access. Changes apply immediately."
-						color: root.themeMuted
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.caption
-						wrapMode: Text.WordWrap
-					}
-				}
-
-				Rectangle {
-					width: 1
-					height: 1
-					color: root.lineColor
-				}
-
-				// Refresh interval
-				Row {
-					width: parent.width
-					spacing: Style.space(8)
-
-					Text {
-						width: 120
-						text: "Refresh (min)"
-						color: root.themeFg
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.body
-						font.bold: true
-						verticalAlignment: Text.AlignVCenter
+					RowLayout {
+						Layout.fillWidth: true
+						spacing: Style.space(8)
+						Text {
+							Layout.preferredWidth: 130
+							text: "Show completed"
+							color: root.themeFg
+							font.family: root.fontFamily
+							font.pixelSize: Style.font.body
+							font.bold: true
+						}
+						Button {
+							text: "Off"
+							foreground: root.themeFg
+							fontSize: Style.font.caption
+							selected: root.settingShowCompleted === "off"
+							onClicked: root.settingShowCompleted = "off"
+						}
+						Button {
+							text: "On"
+							foreground: root.themeFg
+							fontSize: Style.font.caption
+							selected: root.settingShowCompleted === "on"
+							onClicked: root.settingShowCompleted = "on"
+						}
+						Item { Layout.fillWidth: true }
 					}
 
-					Spinner {
-						width: 100
-						value: root.settingRefreshMinutes
-						minimumValue: 1
-						maximumValue: 60
-						stepSize: 1
-						verticalAlignment: Text.AlignVCenter
-						onValueChanged: root.settingRefreshMinutes = value
-					}
-
-					Text {
-						width: 60
-						text: root.settingRefreshMinutes + " min"
-						color: root.themeMuted
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.body
-						verticalAlignment: Text.AlignVCenter
-					}
-				}
-
-				Rectangle {
-					width: 1
-					height: 1
-					color: root.lineColor
-				}
-
-				// Max tasks
-				Row {
-					width: parent.width
-					spacing: Style.space(8)
-
-					Text {
-						width: 120
-						text: "Max tasks"
-						color: root.themeFg
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.body
-						font.bold: true
-						verticalAlignment: Text.AlignVCenter
-					}
-
-					Spinner {
-						width: 100
-						value: root.settingMaxTasks
-						minimumValue: 5
-						maximumValue: 100
-						stepSize: 5
-						verticalAlignment: Text.AlignVCenter
-						onValueChanged: root.settingMaxTasks = value
-					}
-
-					Text {
-						width: 60
-						text: root.settingMaxTasks + " tasks"
-						color: root.themeMuted
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.body
-						verticalAlignment: Text.AlignVCenter
-					}
-				}
-
-				Rectangle {
-					width: 1
-					height: 1
-					color: root.lineColor
-				}
-
-				// Show completed
-				Row {
-					width: parent.width
-					spacing: Style.space(8)
-
-					Text {
-						width: 120
-						text: "Show completed"
-						color: root.themeFg
-						font.family: root.fontFamily
-						font.pixelSize: Style.font.body
-						font.bold: true
-						verticalAlignment: Text.AlignVCenter
-					}
-
-					Item {
-						width: parent.width - 120
-						height: 26
-						Row {
-							spacing: Style.space(4)
-							anchors.centerIn: parent
-
-							Button {
-								width: 80
-								text: "Off"
-								foreground: root.settingShowCompleted === "off" ? root.themeAccent : root.themeMuted
-								fontSize: Style.font.caption
-								selected: root.settingShowCompleted === "off"
-								onClicked: root.settingShowCompleted = "off"
-							}
-
-							Button {
-								width: 80
-								text: "On"
-								foreground: root.settingShowCompleted === "on" ? root.themeAccent : root.themeMuted
-								fontSize: Style.font.caption
-								selected: root.settingShowCompleted === "on"
-								onClicked: root.settingShowCompleted = "on"
-							}
+					RowLayout {
+						Layout.fillWidth: true
+						spacing: Style.space(6)
+						Button {
+							text: "Cancel"
+							foreground: root.themeFg
+							onClicked: root.showSettings = false
+						}
+						Button {
+							Layout.fillWidth: true
+							text: "Save changes"
+							foreground: root.themeAccent
+							selected: true
+							bordered: true
+							onClicked: root.saveAllSettings()
 						}
 					}
 				}
+			}
+
+			// Drag layer: ghost that follows the cursor while dragging a task.
+			Item {
+				id: dragLayer
+				anchors.fill: parent
+				z: 100
 
 				Rectangle {
-					width: 1
-					height: 1
-					color: root.lineColor
-				}
-
-				// Save / Cancel buttons
-				Row {
-					width: parent.width
-					spacing: Style.space(6)
-
-					Button {
-						width: 80
-						text: "Cancel"
-						foreground: root.themeFg
-						onClicked: root.showSettings = false
-					}
-
-					Button {
-						width: parent.width - 80
-						text: "Save changes"
-						foreground: root.themeAccent
-						selected: true
-						bordered: true
-						onClicked: root.saveAllSettings()
+					visible: root.dragging && root.dragTask !== null
+					x: root.dragX - 24
+					y: root.dragY - 14
+					width: 220
+					height: 28
+					radius: Style.cornerRadius
+					color: root.surfaceBg
+					border.color: root.themeAccent
+					border.width: 1
+					opacity: 0.95
+					Text {
+						anchors.fill: parent
+						anchors.leftMargin: 8
+						anchors.rightMargin: 8
+						verticalAlignment: Text.AlignVCenter
+						elide: Text.ElideRight
+						text: root.dragTask ? (root.dragTask.title || "Untitled task") : ""
+						color: root.themeFg
+						font.family: root.fontFamily
+						font.pixelSize: Style.font.body
 					}
 				}
 			}
 		}
 	}
-}
 
-// Local state for expanded task time picker
-property bool showTimePicker: false
+	// ── Delegates ─────────────────────────────────────────────────────────
+
+	// One row in the List tab.
+	Component {
+		id: taskRowComponent
+
+		Item {
+			id: row
+			property var task: modelData
+			readonly property bool done: root.isDone(task)
+			readonly property bool expanded: root.expandedTaskId === task.id
+			width: parent ? parent.width : 0
+			height: rowLayout.implicitHeight
+
+			ColumnLayout {
+				id: rowLayout
+				width: parent.width
+				spacing: Style.space(4)
+
+				RowLayout {
+					Layout.fillWidth: true
+					spacing: Style.space(8)
+
+					Rectangle {
+						Layout.preferredWidth: 18
+						Layout.preferredHeight: 18
+						Layout.alignment: Qt.AlignTop
+						Layout.topMargin: 3
+						radius: 4
+						color: row.done ? root.themeAccent : "transparent"
+						border.color: row.done ? root.themeAccent : root.themeMuted
+						border.width: 1
+						Text {
+							anchors.centerIn: parent
+							visible: row.done
+							text: "✓"
+							color: root.themeBg
+							font.pixelSize: 11
+							font.bold: true
+						}
+						MouseArea {
+							anchors.fill: parent
+							cursorShape: Qt.PointingHandCursor
+							onClicked: row.done ? root.uncompleteTask(row.task.id) : root.completeTask(row.task.id)
+						}
+					}
+
+					ColumnLayout {
+						Layout.fillWidth: true
+						spacing: 1
+
+						Text {
+							Layout.fillWidth: true
+							text: row.task.title || "Untitled task"
+							color: row.done ? root.themeMuted : root.themeFg
+							font.family: root.fontFamily
+							font.pixelSize: Style.font.body
+							font.bold: !row.done
+							font.strikeout: row.done
+							elide: Text.ElideRight
+						}
+
+						RowLayout {
+							Layout.fillWidth: true
+							spacing: Style.space(8)
+
+							Text {
+								text: root.dueLabel(row.task)
+								color: root.dueColor(row.task)
+								font.family: root.fontFamily
+								font.pixelSize: Style.font.caption
+								font.bold: root.isOverdue(row.task)
+							}
+							Text {
+								visible: root.getTaskProject(row.task) !== null
+								text: root.getTaskProject(row.task) ? "· " + root.getTaskProject(row.task).title : ""
+								color: root.projectColor(row.task)
+								font.family: root.fontFamily
+								font.pixelSize: Style.font.caption
+							}
+							Repeater {
+								model: root.getTaskTags(row.task)
+								Text {
+									text: "#" + modelData.title
+									color: root.safeColor(modelData.color, root.themeMuted)
+									font.family: root.fontFamily
+									font.pixelSize: Style.font.caption
+								}
+							}
+							Item { Layout.fillWidth: true }
+						}
+					}
+
+					Button {
+						Layout.alignment: Qt.AlignTop
+						visible: !row.done
+						iconText: row.expanded ? "" : ""
+						foreground: root.themeMuted
+						onClicked: root.expandTask(row.task.id)
+					}
+				}
+
+				// Expanded actions
+				Rectangle {
+					Layout.fillWidth: true
+					Layout.preferredHeight: expandedColumn.implicitHeight + Style.space(16)
+					visible: row.expanded
+					radius: Style.cornerRadius
+					color: root.surfaceBg
+					border.color: root.lineColor
+					border.width: 1
+
+					Column {
+						id: expandedColumn
+						x: Style.space(8)
+						y: Style.space(8)
+						width: parent.width - Style.space(16)
+						spacing: Style.space(6)
+
+						Row {
+							spacing: Style.space(6)
+							Button {
+								text: row.done ? "Reopen" : "Done"
+								foreground: row.done ? root.themeMuted : root.themeAccent
+								fontSize: Style.font.caption
+								onClicked: row.done ? root.uncompleteTask(row.task.id) : root.completeTask(row.task.id)
+							}
+							Button {
+								text: "Tomorrow"
+								foreground: root.themeFg
+								fontSize: Style.font.caption
+								onClicked: root.postponeTask(row.task.id)
+							}
+							Button {
+								text: root.service && root.service.hasTime(row.task) ? "Change time…" : "Schedule…"
+								foreground: root.themeFg
+								fontSize: Style.font.caption
+								onClicked: root.timePickerTaskId = root.timePickerTaskId === row.task.id ? "" : row.task.id
+							}
+							Button {
+								text: "Cancel task"
+								foreground: root.themeUrgent
+								fontSize: Style.font.caption
+								onClicked: root.cancelTask(row.task.id)
+							}
+							Button {
+								text: "Delete"
+								foreground: root.themeUrgent
+								fontSize: Style.font.caption
+								onClicked: root.deleteTask(row.task.id)
+							}
+						}
+
+						Flow {
+							width: parent.width
+							visible: root.timePickerTaskId === row.task.id
+							spacing: Style.space(4)
+
+							Repeater {
+								model: root.timePresets
+								Button {
+									text: modelData.label
+									foreground: root.themeFg
+									fontSize: Style.font.caption
+									selected: root.service && root.service.timeText(row.task) === modelData.value && root.service.dayKey(row.task) === root.service.todayIso
+									onClicked: root.scheduleTask(row.task.id, modelData.value)
+								}
+							}
+							Button {
+								text: "No time"
+								foreground: root.themeMuted
+								fontSize: Style.font.caption
+								onClicked: root.scheduleTask(row.task.id, "")
+							}
+						}
+					}
+				}
+
+				Rectangle {
+					Layout.fillWidth: true
+					Layout.preferredHeight: 1
+					color: root.lineColor
+				}
+			}
+		}
+	}
+
+	// A draggable card in the Agenda's "To schedule" list.
+	Component {
+		id: queueChipComponent
+
+		Rectangle {
+			id: chip
+			objectName: "queueChip"
+			property var task: modelData
+			width: parent ? parent.width : 0
+			height: chipColumn.implicitHeight + Style.space(12)
+			radius: Style.cornerRadius
+			color: chipMouse.containsMouse ? Qt.rgba(root.themeFg.r, root.themeFg.g, root.themeFg.b, 0.08) : root.surfaceBg
+			border.color: root.lineColor
+			border.width: 1
+			opacity: root.dragging && root.dragTask && root.dragTask.id === task.id ? 0.35 : 1
+
+			Rectangle {
+				x: 0
+				width: 3
+				height: parent.height
+				color: root.projectColor(chip.task)
+			}
+
+			ColumnLayout {
+				id: chipColumn
+				anchors.left: parent.left
+				anchors.right: parent.right
+				anchors.verticalCenter: parent.verticalCenter
+				anchors.leftMargin: Style.space(10)
+				anchors.rightMargin: Style.space(8)
+				spacing: 1
+
+				Text {
+					Layout.fillWidth: true
+					text: chip.task.title || "Untitled task"
+					color: root.themeFg
+					font.family: root.fontFamily
+					font.pixelSize: Style.font.body
+					elide: Text.ElideRight
+				}
+				Text {
+					Layout.fillWidth: true
+					text: root.dueLabel(chip.task)
+					color: root.dueColor(chip.task)
+					font.family: root.fontFamily
+					font.pixelSize: Style.font.caption
+					elide: Text.ElideRight
+				}
+			}
+
+			MouseArea {
+				id: chipMouse
+				anchors.fill: parent
+				hoverEnabled: true
+				preventStealing: true
+				cursorShape: root.dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+				property real pressX: 0
+				property real pressY: 0
+				onPressed: function(m) { pressX = m.x; pressY = m.y }
+				onPositionChanged: function(m) {
+					if (!pressed) return
+					if (!root.dragging && Math.abs(m.x - pressX) + Math.abs(m.y - pressY) < 6) return
+					root.dragMove(chip.task, chipMouse.mapToItem(dragLayer, m.x, m.y))
+				}
+				onReleased: root.dragDrop()
+				onCanceled: root.dragCancel()
+			}
+		}
+	}
+
+	// A scheduled block on the Agenda timeline (also draggable to reschedule).
+	Component {
+		id: blockComponent
+
+		Rectangle {
+			id: block
+			objectName: "agendaBlock"
+			property var entry: modelData
+			property var task: entry.task
+			readonly property bool done: root.isDone(task)
+			readonly property real laneWidth: (timeline.width - root.gutterWidth - 8) / entry.lanes
+			x: root.gutterWidth + 2 + entry.lane * laneWidth
+			y: entry.start / 60 * root.hourHeight + 1
+			width: laneWidth - 3
+			height: Math.max(22, (entry.end - entry.start) / 60 * root.hourHeight - 2)
+			radius: Style.cornerRadius
+			color: Qt.rgba(root.projectColor(task).r, root.projectColor(task).g, root.projectColor(task).b, 0.28)
+			border.color: root.projectColor(task)
+			border.width: 1
+			opacity: (root.dragging && root.dragTask && root.dragTask.id === task.id) ? 0.35 : (done ? 0.55 : 1)
+			clip: true
+
+			MouseArea {
+				id: blockMouse
+				anchors.fill: parent
+				preventStealing: true
+				cursorShape: root.dragging ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+				property real pressX: 0
+				property real pressY: 0
+				onPressed: function(m) { pressX = m.x; pressY = m.y }
+				onPositionChanged: function(m) {
+					if (!pressed) return
+					if (!root.dragging && Math.abs(m.x - pressX) + Math.abs(m.y - pressY) < 6) return
+					root.dragMove(block.task, blockMouse.mapToItem(dragLayer, m.x, m.y))
+				}
+				onReleased: root.dragDrop()
+				onCanceled: root.dragCancel()
+			}
+
+			RowLayout {
+				anchors.fill: parent
+				anchors.margins: 4
+				spacing: 4
+
+				ColumnLayout {
+					Layout.fillWidth: true
+					Layout.alignment: Qt.AlignTop
+					spacing: 0
+					Text {
+						Layout.fillWidth: true
+						text: block.task.title || "Untitled task"
+						color: root.themeFg
+						font.family: root.fontFamily
+						font.pixelSize: Style.font.body
+						font.strikeout: block.done
+						elide: Text.ElideRight
+					}
+					Text {
+						Layout.fillWidth: true
+						visible: block.height >= 40
+						text: root.service ? root.service.timeText(block.task) + (block.task.timeLength > 0 ? "–" + root.endTimeText(block.task) : "") : ""
+						color: root.themeMuted
+						font.family: root.fontFamily
+						font.pixelSize: Style.font.caption
+						elide: Text.ElideRight
+					}
+				}
+
+				Button {
+					Layout.alignment: Qt.AlignTop
+					iconText: block.done ? "" : ""
+					foreground: block.done ? root.themeMuted : root.themeAccent
+					tooltipText: block.done ? "Reopen" : "Done"
+					onClicked: block.done ? root.uncompleteTask(block.task.id) : root.completeTask(block.task.id)
+				}
+			}
+		}
+	}
+}

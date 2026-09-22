@@ -17,7 +17,7 @@
 The SingularityApp plugin integrates [SingularityApp](https://singularity-app.com) with your [Omarchy](https://omarchy.org) workflow. It provides:
 
 - **Bar widget**: Shows today's open task count in the Omarchy bar
-- **Floating panel**: Full daily task planner with create, edit, and completion actions
+- **Floating panel**: A List tab for daily task planning and an Agenda tab for drag-and-drop scheduling
 - **API integration**: Connects to the SingularityApp v2 REST API
 
 ## Features
@@ -30,22 +30,30 @@ The SingularityApp plugin integrates [SingularityApp](https://singularity-app.co
 - Tooltip shows task count or status
 - Shows "no tasks" / "loading" / "no API token" states
 
-### Task Panel
+### List Tab
 
-- **Today's task list** with overdue indicator
+- **Overdue / Today / No date** groups, each sorted by due date and time
+- Every task row shows its due date (or "Overdue · <date>") and time, e.g. `Overdue · Tue 15 Sep · 09:00`
 - **Quick add** form with title, note, project, tags, priority, date, and time
 - **Task actions** per row:
   - Complete/Reopen checkbox
-  - Expand/collapse ▼ button
+  - Expand/collapse button
   - Priority color coding
-  - Time display
 - **Expanded task view** with action buttons:
   - Done/Reopen
   - Tomorrow (postpone)
-  - Cancel
+  - Cancel task
   - Schedule at specific time
   - Delete task
-- **Project and tag** filtering and display
+- **Project and tag** display
+
+### Agenda Tab
+
+- A day timeline in 1-hour blocks, with a "To schedule" sidebar listing undated, overdue, or time-less tasks
+- **Drag a task from the sidebar onto an hour** to set its due date and hour in SingularityApp
+- **Drag an existing block to a new hour** to reschedule it
+- Overlapping tasks lay out in side-by-side lanes; the current time is marked on today's timeline
+- Previous/Next/Today navigation between days
 
 ### API Integration
 
@@ -53,6 +61,7 @@ The SingularityApp plugin integrates [SingularityApp](https://singularity-app.co
 - Supports Bearer token authentication
 - Auto-refresh at configurable intervals (default: 5 minutes)
 - Loads projects and tags on startup
+- Dates are read via `new Date(task.start)` in the local timezone (never by string-slicing), so due dates and times are correct regardless of where the task was created
 
 ## Installation
 
@@ -97,6 +106,8 @@ omarchy bar set david.singularity apiToken YOUR_TOKEN_HERE
 
 ```bash
 omarchy-shell shell summon david.singularity '{}'
+# Open directly on the Agenda tab
+omarchy-shell shell summon david.singularity '{"tab":"agenda"}'
 ```
 
 ### Bar widget interactions
@@ -104,14 +115,20 @@ omarchy-shell shell summon david.singularity '{}'
 - **Left-click**: Open the task panel
 - **Right-click**: Toggle the panel open/closed
 
-### Panel actions
+### List tab actions
 
 - **Quick add**: Click `+` or press Enter to quickly add a task
 - **Complete task**: Click the checkbox or "Done" button
 - **Postpone**: Click "Tomorrow" to move to next day
-- **Cancel**: Click "Cancel" to delete (move to trash)
-- **Schedule**: Select a time preset or open the time picker
-- **Delete**: Click "Delete task" in expanded view
+- **Cancel**: Click "Cancel task" to mark it cancelled
+- **Schedule**: Select a time preset in the expanded task view
+- **Delete**: Click "Delete" in expanded view
+
+### Agenda tab actions
+
+- **Schedule a task**: Drag a card from "To schedule" onto an hour on the timeline
+- **Reschedule**: Drag an existing block to a different hour
+- **Complete**: Click the checkmark on a scheduled block
 
 ## Development
 

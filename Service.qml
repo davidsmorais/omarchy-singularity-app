@@ -7,23 +7,36 @@ import qs.Ui
 // SingularityApp background service. Polls the v2 REST API and owns the task
 // list, projects, and tags that the bar widget and panel read from.
 //
-// API: https://api.singularity-app.com/v2/api  (Bearer token in Authorization header)
+// API: https://singularity-app.com/wiki/api/  (Bearer token in Authorization header)
 // Base URL: https://api.singularity-app.com/v2
+//
+// Data model notes (verified against the live API):
+//   - `start` is an ISO instant. Date-only tasks (`useTime: false`) are stored as
+//     local midnight expressed in UTC, so every date/time here is read through
+//     `new Date(task.start)` in the local timezone, never by slicing the string.
+//   - `useTime` says whether the time-of-day is meaningful; `timeLength` is minutes.
+//   - Completion is `checked` (0 open, 1 done, 2 cancelled); `complete` is a progress value.
 Item {
 	id: root
 
 	readonly property string pluginId: "david.singularity"
-	property var settings: ({ apiToken: "", refreshMinutes: 5, maxTasks: 50 })
+	// Injected by the shell when the service instance is created.
+	property var shell: null
+	property var settings: ({ apiToken: "", refreshMinutes: 5, maxTasks: 50, showCompleted: "off" })
 	property bool panelOpen: false
 	property bool loading: false
 	property string error: ""
 	property var tasks: []
-	property var todayTasks: []
 	property var projects: []
 	property var tags: []
-	property int todayCount: 0
 	property bool projectsLoaded: false
 	property bool tagsLoaded: false
+
+	// Derived views, rebuilt by rebuild(). All are sorted by due date/time.
+	property var overdueTasks: []
+	property var todayTasks: []
+	property var undatedTasks: []
+	property int todayCount: 0
 
 	readonly property string baseUrl: "https://api.singularity-app.com/v2"
 	readonly property int refreshMs: {
@@ -32,51 +45,189 @@ Item {
 		if (m > 60) m = 60
 		return m * 60 * 1000
 	}
+	readonly property int maxTasks: parseInt(String(settings.maxTasks || 50), 10) || 50
+	readonly property bool showCompleted: settings.showCompleted === "on"
 
-	// Today's date in ISO format (YYYY-MM-DD) for filtering and scheduling
-	readonly property string todayIso: {
-		var d = new Date()
-		var y = d.getFullYear()
-		var m = String(d.getMonth() + 1).padStart(2, "0")
-		var day = String(d.getDate()).padStart(2, "0")
-		return y + "-" + m + "-" + day
+	// Ticks every minute so "today" rolls over at midnight without a restart.
+	property var now: new Date()
+	readonly property string todayIso: isoDay(now)
+	readonly property string tomorrowIso: isoDay(addDays(now, 1))
+
+	onTasksChanged: rebuild()
+	onNowChanged: rebuild()
+	onSettingsChanged: rebuild()
+
+	// ── Timers ────────────────────────────────────────────────────────────
+	Timer {
+		id: clockTimer
+		interval: 60000
+		repeat: true
+		running: true
+		onTriggered: root.now = new Date()
 	}
 
-	// Tomorrow's date in ISO format
-	readonly property string tomorrowIso: {
-		var d = new Date()
-		d.setDate(d.getDate() + 1)
-		var y = d.getFullYear()
-		var m = String(d.getMonth() + 1).padStart(2, "0")
-		var day = String(d.getDate()).padStart(2, "0")
-		return y + "-" + m + "-" + day
-	}
-
-	// ── Timer-based polling ──────────────────────────────────────────────
+	// Polls whenever a token is set so the bar count stays current even when
+	// the panel is closed.
 	Timer {
 		id: pollTimer
 		interval: root.refreshMs
 		repeat: true
 		triggeredOnStart: true
-		running: root.settings.apiToken !== "" && root.panelOpen
+		running: root.settings.apiToken !== ""
 		onTriggered: root.refresh()
 	}
 
 	Timer {
 		id: dataTimer
-		interval: 60000  // 1 minute
+		interval: 300000
 		repeat: true
 		triggeredOnStart: true
 		running: root.settings.apiToken !== ""
 		onTriggered: loadProjectsAndTags()
 	}
 
+	// ── Date helpers ──────────────────────────────────────────────────────
+	function pad2(n) { return String(n).padStart(2, "0") }
+
+	// Local calendar day as YYYY-MM-DD.
+	function isoDay(d) {
+		return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate())
+	}
+
+	function addDays(d, n) {
+		var c = new Date(d.getTime())
+		c.setDate(c.getDate() + n)
+		return c
+	}
+
+	// "YYYY-MM-DD" + optional "HH:MM" -> local Date.
+	function localDate(dayIso, timeStr) {
+		var p = String(dayIso).split("-")
+		var h = 0, m = 0
+		if (timeStr) {
+			var t = String(timeStr).split(":")
+			h = parseInt(t[0], 10) || 0
+			m = parseInt(t[1], 10) || 0
+		}
+		return new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, parseInt(p[2], 10), h, m, 0, 0)
+	}
+
+	function startDate(task) {
+		if (!task || !task.start) return null
+		var d = new Date(task.start)
+		return isNaN(d.getTime()) ? null : d
+	}
+
+	// Local calendar day of a task's start, or "" when unscheduled.
+	function dayKey(task) {
+		var d = startDate(task)
+		return d ? isoDay(d) : ""
+	}
+
+	function hasTime(task) {
+		return !!task && task.useTime === true && startDate(task) !== null
+	}
+
+	// "HH:MM" local, or "" when the task has no time of day.
+	function timeText(task) {
+		if (!hasTime(task)) return ""
+		var d = startDate(task)
+		return pad2(d.getHours()) + ":" + pad2(d.getMinutes())
+	}
+
+	function isDone(task) {
+		if (!task) return false
+		return task.checked === 1 || task.checked === 2 || !!task.journalDate || task.removed === true
+	}
+
+	function isOverdue(task) {
+		if (!task || isDone(task)) return false
+		var k = dayKey(task)
+		return k !== "" && k < root.todayIso
+	}
+
+	// Earliest first; unscheduled last; ties broken by title.
+	function compareTasks(a, b) {
+		var da = startDate(a), db = startDate(b)
+		if (da && !db) return -1
+		if (!da && db) return 1
+		if (da && db && da.getTime() !== db.getTime()) return da.getTime() - db.getTime()
+		return String(a.title || "").localeCompare(String(b.title || ""))
+	}
+
+	function sortTasks(list) {
+		var sorted = list.slice()
+		sorted.sort(compareTasks)
+		return sorted
+	}
+
+	// Kept for callers that still use the old name.
+	function sortTodayTasks(list) { return sortTasks(list) }
+
+	// ── Derived lists ─────────────────────────────────────────────────────
+	function rebuild() {
+		var overdue = [], today = [], undated = []
+		var list = root.tasks || []
+		for (var i = 0; i < list.length; i++) {
+			var t = list[i]
+			if (!t || t.removed === true || t.isNote === true) continue
+			if (t.journalDate && t.journalDate !== "") continue
+			var done = isDone(t)
+			var key = dayKey(t)
+			if (key === "") {
+				if (!done) undated.push(t)
+			} else if (done) {
+				if (root.showCompleted && key === root.todayIso) today.push(t)
+			} else if (key < root.todayIso) {
+				overdue.push(t)
+			} else if (key === root.todayIso) {
+				today.push(t)
+			}
+		}
+		overdue = sortTasks(overdue)
+		today = sortTasks(today)
+		undated = sortTasks(undated)
+		var open = 0
+		for (var j = 0; j < today.length; j++) if (!isDone(today[j])) open++
+		root.todayCount = overdue.length + open
+		// maxTasks caps what the list renders, most urgent first.
+		var cap = root.maxTasks
+		root.overdueTasks = overdue.slice(0, cap)
+		root.todayTasks = today.slice(0, Math.max(0, cap - root.overdueTasks.length))
+		root.undatedTasks = undated.slice(0, Math.max(0, cap - root.overdueTasks.length - root.todayTasks.length))
+	}
+
+	// Every non-removed task scheduled on a local day, sorted by start.
+	function tasksForDay(dayIso) {
+		var out = []
+		var list = root.tasks || []
+		for (var i = 0; i < list.length; i++) {
+			var t = list[i]
+			if (!t || t.removed === true || t.isNote === true) continue
+			if (t.journalDate && t.journalDate !== "") continue
+			if (dayKey(t) === dayIso) out.push(t)
+		}
+		return sortTasks(out)
+	}
+
+	// Open tasks that still need a slot: undated, overdue, or dated without a time.
+	function tasksToSchedule(dayIso) {
+		var out = []
+		var list = root.tasks || []
+		for (var i = 0; i < list.length; i++) {
+			var t = list[i]
+			if (!t || t.removed === true || t.isNote === true || isDone(t)) continue
+			if (t.journalDate && t.journalDate !== "") continue
+			var key = dayKey(t)
+			if (key === "" || key < root.todayIso || (key === dayIso && !hasTime(t))) out.push(t)
+		}
+		return sortTasks(out)
+	}
+
 	// ── Public API ────────────────────────────────────────────────────────
 	function refresh() {
 		if (root.settings.apiToken === "") {
 			root.tasks = []
-			root.todayTasks = []
-			root.todayCount = 0
 			root.error = "No API token set. Enter one below."
 			return
 		}
@@ -87,8 +238,7 @@ Item {
 
 	function openPanel() {
 		root.panelOpen = true
-		if (!pollTimer.running) pollTimer.restart()
-		if (!dataTimer.running) dataTimer.restart()
+		refresh()
 	}
 
 	function closePanel() {
@@ -96,97 +246,116 @@ Item {
 	}
 
 	function togglePanel() {
-		if (root.panelOpen) root.panelOpen = false
-		else root.panelOpen = true
+		root.panelOpen = !root.panelOpen
 	}
 
-	// Applies the token immediately for this session and persists it via the
-	// official CLI so it survives a shell restart. Plugins can't write
-	// shell.json directly — `omarchy bar set` is the supported path.
+	function layoutEntryFromShell() {
+		if (!root.shell || !root.shell.barConfig) return null
+		var cfg = root.shell.barConfig
+		var layout = cfg.bar && cfg.bar.layout ? cfg.bar.layout : null
+		if (layout) {
+			var sections = ["left", "center", "right"]
+			for (var s = 0; s < sections.length; s++) {
+				var arr = layout[sections[s]] || []
+				for (var i = 0; i < arr.length; i++) {
+					var entry = arr[i]
+					if (entry && String(entry.id || "") === root.pluginId) return entry
+				}
+			}
+		}
+		var plugins = cfg.plugins
+		if (Array.isArray(plugins)) {
+			for (var j = 0; j < plugins.length; j++) {
+				if (plugins[j] && String(plugins[j].id || "") === root.pluginId) return plugins[j]
+			}
+		}
+		return null
+	}
+
+	function normalizeShowCompleted(value) {
+		if (value === true || value === "on") return "on"
+		if (value === false || value === "off") return "off"
+		return "off"
+	}
+
+	// Read inline bar settings from shell.json (via the live shell config).
+	function syncSettingsFromShell() {
+		var entry = layoutEntryFromShell()
+		if (!entry) return false
+		var next = {}
+		for (var k in root.settings) next[k] = root.settings[k]
+		if (entry.apiToken !== undefined && entry.apiToken !== null)
+			next.apiToken = String(entry.apiToken)
+		if (entry.refreshMinutes !== undefined && entry.refreshMinutes !== null)
+			next.refreshMinutes = entry.refreshMinutes
+		if (entry.maxTasks !== undefined && entry.maxTasks !== null)
+			next.maxTasks = entry.maxTasks
+		if (entry.showCompleted !== undefined && entry.showCompleted !== null)
+			next.showCompleted = normalizeShowCompleted(entry.showCompleted)
+		if (JSON.stringify(next) === JSON.stringify(root.settings)) return false
+		root.settings = next
+		return true
+	}
+
+	function persistSettingEntry(entry) {
+		if (root.shell && typeof root.shell.updateEntryInline === "function")
+			return root.shell.updateEntryInline(root.pluginId, entry)
+		for (var key in entry) {
+			if (key === "id") continue
+			Quickshell.execDetached(["omarchy", "bar", "set", root.pluginId, key, String(entry[key])])
+		}
+		return true
+	}
+
 	function saveApiToken(token) {
-	  var t = String(token || "").trim()
-	  if (t === "") return
-	  var next = {}
-	  for (var k in root.settings) next[k] = root.settings[k]
-	  next.apiToken = t
-	  root.settings = next
-	  Quickshell.execDetached(["omarchy", "bar", "set", root.pluginId, "apiToken", t])
-	  loadProjectsAndTags()
-	  refresh()
+		var t = String(token || "").trim()
+		if (t === "") return
+		saveSetting("apiToken", t)
 	}
 
-	// Persists a single setting key to shell.json via the official CLI so it
-	// survives a shell restart. Works for refreshMinutes, maxTasks,
-	// showCompleted, and apiToken.
+	// Persists to shell.json through the shell API (same path as omarchy bar set).
 	function saveSetting(key, value) {
-	  var v = String(value ?? "")
-	  Quickshell.execDetached(["omarchy", "bar", "set", root.pluginId, key, v])
-	  var next = {}
-	  for (var k in root.settings) next[k] = root.settings[k]
-	  next[key] = v
-	  root.settings = next
-	  if (key === "apiToken") {
-	    if (v !== "") loadProjectsAndTags()
-	    refresh()
-	  }
+		var v = String(value === undefined || value === null ? "" : value)
+		var next = {}
+		for (var k in root.settings) next[k] = root.settings[k]
+		next[key] = v
+		var entry = { id: root.pluginId }
+		for (var ek in next) if (ek !== "id") entry[ek] = next[ek]
+		persistSettingEntry(entry)
+		root.settings = next
+		if (key === "apiToken") {
+			if (v !== "") loadProjectsAndTags()
+			refresh()
+		}
 	}
 
-	// ── Task filtering ────────────────────────────────────────────────────
-	function isTodayTask(task) {
-		if (!task) return false
-		if (task.removed === true) return false
-		if (task.journalDate && task.journalDate !== "") return false
-		// Task is for today if it's overdue, due today, or has no start date (unscheduled).
-		// Completed tasks stay visible with strikethrough.
-		if (!task.start || task.start === "") return true
-		var taskDate = task.start.slice(0, 10)
-		return taskDate <= root.todayIso
-	}
-
-	function filterTodayTasks(allTasks) {
-		return allTasks.filter(isTodayTask)
-	}
-
-	// ── Fetch tasks ───────────────────────────────────────────────────────
+	// ── Fetch ─────────────────────────────────────────────────────────────
 	function fetchTasks() {
-		var params = []
-		params.push("includeRemoved=false")
-		params.push("includeArchived=false")
-		params.push("maxCount=" + root.settings.maxTasks)
-		var query = "?" + params.join("&")
-		var fetch = http("GET", "/task" + query)
+		// One request for everything: the API returns all tasks (no server-side
+		// due-date ordering), so filtering and sorting happen locally.
+		var fetch = http("GET", "/task?includeRemoved=false&includeArchived=false&maxCount=1000")
 		fetch(function(ok, data, err) {
 			root.loading = false
 			if (!ok) {
 				root.error = err || "Failed to load tasks"
-				root.tasks = []
-				root.todayTasks = []
-				root.todayCount = 0
 				return
 			}
-			var list = Array.isArray(data.tasks) ? data.tasks : (Array.isArray(data) ? data : [])
-			root.tasks = list
-			root.todayTasks = filterTodayTasks(list)
-			root.todayCount = root.todayTasks.length
+			root.tasks = Array.isArray(data && data.tasks) ? data.tasks : (Array.isArray(data) ? data : [])
 			root.error = ""
 		})
 	}
 
-	// ── Load projects and tags ────────────────────────────────────────────
 	function loadProjectsAndTags() {
 		if (root.settings.apiToken === "") return
-		// Load both in parallel
-		var pFetch = http("GET", "/project?maxCount=100")
-		var tFetch = http("GET", "/tag?maxCount=200")
-		pFetch(function(ok, data, err) {
+		http("GET", "/project?maxCount=100")(function(ok, data, err) {
 			if (ok) {
-				root.projects = Array.isArray(data.projects) ? data.projects : []
+				root.projects = Array.isArray(data && data.projects) ? data.projects : []
 				root.projectsLoaded = true
 			}
 		})
-		tFetch(function(ok, data, err) {
+		http("GET", "/tag?maxCount=200")(function(ok, data, err) {
 			if (ok) {
-				root.tags = Array.isArray(data.tags) ? data.tags.filter(function(t) { return !t.removed }) : []
+				root.tags = Array.isArray(data && data.tags) ? data.tags.filter(function(t) { return !t.removed }) : []
 				root.tagsLoaded = true
 			}
 		})
@@ -198,8 +367,7 @@ Item {
 			root.error = "No API token set"
 			return
 		}
-		var create = http("POST", "/task", body)
-		create(function(ok, data, err) {
+		http("POST", "/task", body)(function(ok, data, err) {
 			if (!ok) {
 				root.error = "Failed to create task: " + (err || "unknown error")
 				return
@@ -208,7 +376,8 @@ Item {
 		})
 	}
 
-	function addTask(title, note, priority, startDate, projectId, tags) {
+	// startDate is "YYYY-MM-DD" (local) or ""; time is "HH:MM" (local) or "".
+	function addTask(title, note, priority, startDate, projectId, tags, time) {
 		if (!title || title.trim() === "") {
 			root.error = "Task title is required"
 			return
@@ -216,138 +385,179 @@ Item {
 		var body = { title: title.trim() }
 		if (note !== undefined && note !== null && note.trim() !== "") body.note = note.trim()
 		if (priority !== undefined && priority !== null) body.priority = priority
-		if (startDate !== undefined && startDate !== null && startDate.trim() !== "") {
-			// Ensure ISO format with time
-			var d = new Date(startDate)
-			if (!isNaN(d)) {
-				body.start = d.toISOString()
-			} else {
-				// Assume it's already a date string, add midnight UTC
-				body.start = startDate.trim() + "T00:00:00.000Z"
-			}
+		var day = startDate ? String(startDate).trim().slice(0, 10) : ""
+		if (day !== "") {
+			var s = startFields(day, time)
+			body.start = s.start
+			body.useTime = s.useTime
+			if (s.useTime) body.timeLength = 60
 		}
 		if (projectId !== undefined && projectId !== null && projectId !== "") body.projectId = projectId
 		if (tags !== undefined && tags !== null && tags.length > 0) body.tags = tags
 		createTask(body)
 	}
 
+	// Body fields for placing a task on a local day, optionally at a local time.
+	function startFields(dayIso, timeStr) {
+		var d = localDate(dayIso, timeStr)
+		return { start: d.toISOString(), useTime: !!timeStr }
+	}
+
 	function completeTask(taskId) {
 		if (root.settings.apiToken === "") return
-		patchTask(taskId, { complete: 1 })
+		patchTask(taskId, { checked: 1 })
 	}
 
 	function uncompleteTask(taskId) {
 		if (root.settings.apiToken === "") return
-		patchTask(taskId, { complete: 0 })
-	}
-
-	function postponeTask(taskId) {
-		if (root.settings.apiToken === "") return
-		// Set start to tomorrow at the same time, or tomorrow midnight if no time
-		patchTask(taskId, { start: root.tomorrowIso + "T00:00:00.000Z" })
-	}
-
-	function scheduleForToday(taskId, timeStr) {
-		if (root.settings.apiToken === "") return
-		// timeStr is like "14:30" — build today's ISO with that time
-		var iso = root.todayIso + "T" + timeStr + ":00.000Z"
-		patchTask(taskId, { start: iso })
+		patchTask(taskId, { checked: 0 })
 	}
 
 	function cancelTask(taskId) {
 		if (root.settings.apiToken === "") return
-		// Move to trash by setting deleteDate to today
-		patchTask(taskId, { deleteDate: root.todayIso })
+		patchTask(taskId, { checked: 2 })
 	}
 
+	function findTask(taskId) {
+		var list = root.tasks || []
+		for (var i = 0; i < list.length; i++) if (list[i].id === taskId) return list[i]
+		return null
+	}
+
+	// Moves a task to tomorrow, keeping its time of day if it has one.
+	function postponeTask(taskId) {
+		if (root.settings.apiToken === "") return
+		var t = findTask(taskId)
+		var time = t ? timeText(t) : ""
+		var body = startFields(root.tomorrowIso, time)
+		if (!body.useTime) body.timeLength = 0
+		patchTask(taskId, body)
+	}
+
+	// Places a task in a 1-hour block: `hour` (0-23) on local `dayIso`.
+	// Existing durations are kept; tasks without one get 60 minutes.
+	function scheduleAt(taskId, dayIso, hour) {
+		if (root.settings.apiToken === "") return
+		var t = findTask(taskId)
+		var len = t && t.timeLength > 0 ? t.timeLength : 60
+		var body = startFields(dayIso, pad2(hour) + ":00")
+		body.timeLength = len
+		patchTask(taskId, body)
+	}
+
+	// timeStr "HH:MM" schedules today at that time; "" clears the time.
+	function scheduleForToday(taskId, timeStr) {
+		if (root.settings.apiToken === "") return
+		if (!timeStr) {
+			var body = startFields(root.todayIso, "")
+			body.timeLength = 0
+			patchTask(taskId, body)
+			return
+		}
+		var t = findTask(taskId)
+		var b = startFields(root.todayIso, timeStr)
+		b.timeLength = t && t.timeLength > 0 ? t.timeLength : 60
+		patchTask(taskId, b)
+	}
+
+	// Applies a PATCH locally first so the UI reacts instantly, then confirms
+	// with the server (refreshing on failure to roll back).
 	function patchTask(taskId, body) {
-		var patch = http("PATCH", "/task/" + encodeURIComponent(taskId), body)
-		patch(function(ok, data, err) {
-			if (!ok) {
-				root.error = "Failed to update task: " + (err || "unknown error")
-			} else {
-				refresh()
-			}
+		var list = (root.tasks || []).map(function(t) {
+			if (t.id !== taskId) return t
+			var c = {}
+			for (var k in t) c[k] = t[k]
+			for (var f in body) c[f] = body[f]
+			return c
+		})
+		root.tasks = list
+		http("PATCH", "/task/" + encodeURIComponent(taskId), body)(function(ok, data, err) {
+			if (!ok) root.error = "Failed to update task: " + (err || "unknown error")
+			refresh()
 		})
 	}
 
 	function deleteTask(taskId) {
 		if (root.settings.apiToken === "") return
-		deleteViaApi("/task/" + encodeURIComponent(taskId))
-	}
-
-	function deleteViaApi(path) {
-		var del = http("DELETE", path)
-		del(function(ok, data, err) {
-			if (!ok) {
-				root.error = "Failed to delete task: " + (err || "unknown error")
-			} else {
-				refresh()
-			}
+		root.tasks = (root.tasks || []).filter(function(t) { return t.id !== taskId })
+		http("DELETE", "/task/" + encodeURIComponent(taskId))(function(ok, data, err) {
+			if (!ok) root.error = "Failed to delete task: " + (err || "unknown error")
+			refresh()
 		})
 	}
 
-	// ── HTTP helpers ──────────────────────────────────────────────────────
+	// ── HTTP helper ───────────────────────────────────────────────────────
+	// The actual send is deferred one tick with Qt.callLater. Building and
+	// sending the XHR synchronously from inside a MouseArea click/release
+	// handler (e.g. the agenda's drag-and-drop drop, or any button's
+	// onClicked) leaves it stuck forever: readyState never advances past
+	// the initial OPENED state, so onload/onerror never fire. Queuing the
+	// send for the next event-loop turn avoids that dead state entirely
+	// and costs nothing perceptible.
 	function http(method, path, body) {
 		return function(callback) {
-			var xhr = new XMLHttpRequest()
-			var url = root.baseUrl + path
-			xhr.open(method, url, true)
-			xhr.setRequestHeader("Authorization", "Bearer " + root.settings.apiToken)
-			xhr.setRequestHeader("Content-Type", "application/json")
-			if (body !== undefined && body !== null) {
+			Qt.callLater(function() {
+				var xhr = new XMLHttpRequest()
+				xhr.open(method, root.baseUrl + path, true)
+				xhr.setRequestHeader("Authorization", "Bearer " + root.settings.apiToken)
 				xhr.setRequestHeader("Content-Type", "application/json")
-			}
-			xhr.onerror = function() { callback(false, null, "Network error: could not reach SingularityApp API") }
-			xhr.onload = function() {
-				if (xhr.status >= 200 && xhr.status < 300) {
-					var data = null
-					try { data = JSON.parse(xhr.responseText) } catch (e) { data = xhr.responseText }
-					callback(true, data, "")
-				} else {
-					var msg = "API error " + xhr.status
-					try {
-						var errBody = JSON.parse(xhr.responseText)
-						if (errBody && errBody.message) msg = errBody.message
-						else if (errBody && errBody.error) msg = errBody.error
-					} catch (e) { /* use status text */ }
-					callback(false, null, msg)
+				xhr.onerror = function() { callback(false, null, "Network error: could not reach SingularityApp API") }
+				xhr.onload = function() {
+					if (xhr.status >= 200 && xhr.status < 300) {
+						var data = null
+						try { data = JSON.parse(xhr.responseText) } catch (e) { data = xhr.responseText }
+						callback(true, data, "")
+					} else {
+						var msg = "API error " + xhr.status
+						try {
+							var errBody = JSON.parse(xhr.responseText)
+							if (errBody && errBody.message) msg = errBody.message
+							else if (errBody && errBody.error) msg = errBody.error
+						} catch (e) { /* use status code */ }
+						callback(false, null, msg)
+					}
 				}
-			}
-			if (body !== undefined && body !== null) {
-				xhr.send(JSON.stringify(body))
-			} else {
-				xhr.send()
+				if (body !== undefined && body !== null) xhr.send(JSON.stringify(body))
+				else xhr.send()
+			})
+		}
+	}
+
+	function ping() { return "ok" }
+
+	Connections {
+		target: root.shell
+		function onBarConfigChanged() {
+			if (root.syncSettingsFromShell() && root.settings.apiToken !== "") {
+				root.loadProjectsAndTags()
+				root.refresh()
 			}
 		}
 	}
 
-	// ── Task sorting ──────────────────────────────────────────────────────
-	function sortTodayTasks(tasks) {
-		// Sort: unscheduled first (no start), then by time
-		var sorted = tasks.slice()
-		sorted.sort(function(a, b) {
-			var aHasStart = a.start && a.start !== ""
-			var bHasStart = b.start && b.start !== ""
-			if (aHasStart && !bHasStart) return 1
-			if (!aHasStart && bHasStart) return -1
-			if (!aHasStart && !bHasStart) return 0
-			// Both have start — compare by time
-			var aTime = a.start.slice(11, 16)
-			var bTime = b.start.slice(11, 16)
-			return aTime.localeCompare(bTime)
-		})
-		return sorted
+	// The shell injects `shell` on this instance right after createObject(),
+	// which is *after* Component.onCompleted already ran (onCompleted fires
+	// synchronously inside createObject(), before the caller can assign
+	// properties on the result). So the Component.onCompleted sync below
+	// always finds `shell` still null and silently no-ops, and nothing
+	// else re-triggers it since Connections.onBarConfigChanged only fires
+	// on later *changes*, not on the initial assignment of its target.
+	// Without this handler the token in shell.json is simply never read
+	// into `settings`, which is why the panel would sit on "Loading…"
+	// forever even with a token configured. Re-sync as soon as `shell`
+	// itself arrives.
+	onShellChanged: {
+		if (root.syncSettingsFromShell() && root.settings.apiToken !== "") {
+			root.loadProjectsAndTags()
+			root.refresh()
+		}
 	}
 
-	// ── Lifecycle ─────────────────────────────────────────────────────────
-	function ping() { return "ok" }
-
 	Component.onCompleted: {
-		// Don't auto-poll until the panel is opened (on-demand activation).
-		// Load projects and tags immediately so they're ready when the panel opens.
+		root.syncSettingsFromShell()
 		if (root.settings.apiToken !== "") {
 			loadProjectsAndTags()
+			refresh()
 		}
 	}
 }
