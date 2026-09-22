@@ -249,24 +249,26 @@ Item {
 		root.panelOpen = !root.panelOpen
 	}
 
+	// `root.shell.barConfig` (PluginShellApi.barConfig) is already the bar
+	// section's content (`{ layout: { left, center, right } }`), not the
+	// top-level shell config — it comes from the shell's own
+	// `publicBarConfig()`, which returns `shell.barConfig` and that in turn
+	// is already `shellConfig.bar`. Reading it as `cfg.bar.layout` (as if
+	// `cfg` were the top-level config) or `cfg.plugins` (a top-level key
+	// that `publicBarConfig()` never includes) never matches anything, so
+	// this always returned null and every settings resync from the shell
+	// silently no-opped — this was the actual "API token doesn't persist"
+	// bug: saves wrote to disk fine, but nothing ever read them back in.
 	function layoutEntryFromShell() {
 		if (!root.shell || !root.shell.barConfig) return null
-		var cfg = root.shell.barConfig
-		var layout = cfg.bar && cfg.bar.layout ? cfg.bar.layout : null
-		if (layout) {
-			var sections = ["left", "center", "right"]
-			for (var s = 0; s < sections.length; s++) {
-				var arr = layout[sections[s]] || []
-				for (var i = 0; i < arr.length; i++) {
-					var entry = arr[i]
-					if (entry && String(entry.id || "") === root.pluginId) return entry
-				}
-			}
-		}
-		var plugins = cfg.plugins
-		if (Array.isArray(plugins)) {
-			for (var j = 0; j < plugins.length; j++) {
-				if (plugins[j] && String(plugins[j].id || "") === root.pluginId) return plugins[j]
+		var layout = root.shell.barConfig.layout
+		if (!layout) return null
+		var sections = ["left", "center", "right"]
+		for (var s = 0; s < sections.length; s++) {
+			var arr = layout[sections[s]] || []
+			for (var i = 0; i < arr.length; i++) {
+				var entry = arr[i]
+				if (entry && String(entry.id || "") === root.pluginId) return entry
 			}
 		}
 		return null
@@ -297,14 +299,22 @@ Item {
 		return true
 	}
 
+	// Falls back to the CLI (the same path `omarchy bar set` uses) whenever
+	// the shell-API write isn't available or throws, so a save never
+	// silently no-ops just because the scoped shell object wasn't ready.
 	function persistSettingEntry(entry) {
-		if (root.shell && typeof root.shell.updateEntryInline === "function")
-			return root.shell.updateEntryInline(root.pluginId, entry)
+		if (root.shell && typeof root.shell.updateEntryInline === "function") {
+			try {
+				root.shell.updateEntryInline(root.pluginId, entry)
+				return
+			} catch (e) {
+				console.warn("david.singularity: updateEntryInline failed, falling back to CLI:", e)
+			}
+		}
 		for (var key in entry) {
 			if (key === "id") continue
 			Quickshell.execDetached(["omarchy", "bar", "set", root.pluginId, key, String(entry[key])])
 		}
-		return true
 	}
 
 	function saveApiToken(token) {

@@ -43,17 +43,23 @@ BarWidget {
     }
   }
 
-  onSettingsChanged: {
-    if (singularity) singularity.settings = normalizedSettings()
-    if (hasToken && singularity) singularity.refresh()
+  // Pushes this widget's settings into the shared service, but never lets a
+  // stale/empty snapshot stomp a token the service already has. `settings`
+  // here is the bar's own schema-bound copy of shell.json; it can briefly
+  // lag behind a save the service just made itself (saveApiToken/saveSetting
+  // write straight to `service.settings` before the bar's own reactive copy
+  // has caught up), and re-pushing that lagging snapshot right after would
+  // silently revert the save — this was the "API token doesn't persist" bug.
+  function pushSettingsTo(svc) {
+    if (!svc) return
+    var next = normalizedSettings()
+    if (next.apiToken === "" && svc.settings.apiToken !== "") return
+    svc.settings = next
+    if (root.hasToken) svc.refresh()
   }
 
-  onSingularityChanged: {
-    if (singularity) {
-      singularity.settings = normalizedSettings()
-      if (hasToken) singularity.refresh()
-    }
-  }
+  onSettingsChanged: pushSettingsTo(singularity)
+  onSingularityChanged: pushSettingsTo(singularity)
 
   // serviceFor() is not reactive when the service finishes loading asynchronously.
   Timer {
@@ -64,8 +70,7 @@ BarWidget {
     onTriggered: {
       var svc = root.bar.shell.serviceFor("david.singularity")
       if (!svc) return
-      svc.settings = root.normalizedSettings()
-      if (root.hasToken) svc.refresh()
+      root.pushSettingsTo(svc)
       attached = true
     }
   }
