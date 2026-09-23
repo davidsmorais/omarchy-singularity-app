@@ -302,6 +302,9 @@ Item {
 	// Falls back to the CLI (the same path `omarchy bar set` uses) whenever
 	// the shell-API write isn't available or throws, so a save never
 	// silently no-ops just because the scoped shell object wasn't ready.
+	// The API token is never handed to the CLI: argv is readable by every
+	// local process (/proc/<pid>/cmdline). It goes to a 0600 file over stdin
+	// instead, see writeTokenFile().
 	function persistSettingEntry(entry) {
 		if (root.shell && typeof root.shell.updateEntryInline === "function") {
 			try {
@@ -313,7 +316,62 @@ Item {
 		}
 		for (var key in entry) {
 			if (key === "id") continue
+			if (key === "apiToken") {
+				writeTokenFile(String(entry[key]))
+				continue
+			}
 			Quickshell.execDetached(["omarchy", "bar", "set", root.pluginId, key, String(entry[key])])
+		}
+	}
+
+	// ── Token file fallback ───────────────────────────────────────────────
+	readonly property string tokenDir: {
+		var state = Quickshell.env("XDG_STATE_HOME")
+		if (!state) state = Quickshell.env("HOME") + "/.local/state"
+		return state + "/omarchy/plugins/" + root.pluginId
+	}
+	readonly property string tokenFilePath: tokenDir + "/api-token"
+	property string pendingTokenWrite: ""
+
+	// The token travels over stdin only; the shell script creates the file
+	// under umask 077 and renames it into place atomically.
+	Process {
+		id: tokenWriter
+		stdinEnabled: true
+		command: ["sh", "-c",
+			"umask 077 && mkdir -p \"$1\" && cat > \"$1/api-token.tmp\" && mv -f \"$1/api-token.tmp\" \"$1/api-token\"",
+			"sh", root.tokenDir]
+		onStarted: {
+			write(root.pendingTokenWrite)
+			root.pendingTokenWrite = ""
+			stdinEnabled = false
+		}
+		onExited: function(exitCode) {
+			stdinEnabled = true
+			if (exitCode !== 0) console.warn("david.singularity: failed to save API token file")
+			// A newer token arrived while the previous write was in flight.
+			if (root.pendingTokenWrite !== "") running = true
+		}
+	}
+
+	function writeTokenFile(token) {
+		root.pendingTokenWrite = token
+		if (!tokenWriter.running) tokenWriter.running = true
+	}
+
+	FileView {
+		id: tokenFile
+		path: root.tokenFilePath
+		printErrors: false
+		onLoaded: {
+			var t = String(text() || "").trim()
+			if (t === "" || root.settings.apiToken !== "") return
+			var next = {}
+			for (var k in root.settings) next[k] = root.settings[k]
+			next.apiToken = t
+			root.settings = next
+			root.loadProjectsAndTags()
+			root.refresh()
 		}
 	}
 
@@ -497,39 +555,121 @@ Item {
 	}
 
 	// ── HTTP helper ───────────────────────────────────────────────────────
-	// The actual send is deferred one tick with Qt.callLater. Building and
-	// sending the XHR synchronously from inside a MouseArea click/release
-	// handler (e.g. the agenda's drag-and-drop drop, or any button's
-	// onClicked) leaves it stuck forever: readyState never advances past
-	// the initial OPENED state, so onload/onerror never fire. Queuing the
-	// send for the next event-loop turn avoids that dead state entirely
-	// and costs nothing perceptible.
+	// Requests run through curl rather than XMLHttpRequest, because QML's XHR
+	// has no deadline and buffers the whole body before we can look at it.
+	//   - Deadline: curl --connect-timeout/--max-time, plus a watchdog Timer
+	//     that kills the process if curl itself hangs.
+	//   - Size cap: the body is piped through `head -c`, so at most
+	//     maxResponseBytes (+ a few bytes for the status line) ever reach the
+	//     shell; anything larger makes curl die on SIGPIPE and is rejected.
+	//   - The token and request body are passed via `curl -K -` on stdin, so
+	//     they never appear in argv.
+	readonly property int requestTimeoutSec: 20
+	readonly property int maxResponseBytes: 4 * 1024 * 1024
+	readonly property string statusMarker: "\n__SINGULARITY_HTTP_STATUS__:"
+
+	Component {
+		id: requestComponent
+		Process {
+			id: proc
+			property string config: ""
+			property var done: null
+			property bool finished: false
+			property bool timedOut: false
+
+			stdinEnabled: true
+			command: ["bash", "-c",
+				"set -o pipefail; curl --silent --show-error --proto =https --max-redirs 0 " +
+				"--connect-timeout 10 --max-time \"$1\" --config - " +
+				"--write-out \"$2%{http_code}\" | head -c \"$3\"",
+				"bash", String(root.requestTimeoutSec), root.statusMarker,
+				String(root.maxResponseBytes + root.statusMarker.length + 3)]
+			stdout: StdioCollector { id: out }
+			stderr: StdioCollector { id: err }
+
+			onStarted: {
+				write(config)
+				config = ""
+				stdinEnabled = false
+			}
+			onExited: function(exitCode) {
+				if (finished) return
+				finished = true
+				watchdog.stop()
+				// Collectors flush on stream end; read them on the next tick.
+				Qt.callLater(function() {
+					var cb = proc.done
+					var stdoutText = out.text
+					var stderrText = err.text
+					proc.destroy()
+					root.finishRequest(cb, exitCode, stdoutText, stderrText, proc.timedOut)
+				})
+			}
+
+			property Timer watchdog: Timer {
+				interval: (root.requestTimeoutSec + 5) * 1000
+				running: true
+				onTriggered: {
+					proc.timedOut = true
+					proc.signal(9)
+				}
+			}
+		}
+	}
+
+	function curlQuote(v) {
+		return "\"" + String(v).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")
+			.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t") + "\""
+	}
+
+	function finishRequest(callback, exitCode, stdoutText, stderrText, timedOut) {
+		if (timedOut || exitCode === 28) {
+			callback(false, null, "Request timed out: SingularityApp API did not respond in time")
+			return
+		}
+		var idx = stdoutText.lastIndexOf(root.statusMarker)
+		var status = idx >= 0 ? parseInt(stdoutText.slice(idx + root.statusMarker.length), 10) : NaN
+		var body = idx >= 0 ? stdoutText.slice(0, idx) : stdoutText
+		if (body.length > root.maxResponseBytes || (idx < 0 && stdoutText.length >= root.maxResponseBytes)) {
+			callback(false, null, "Response too large from SingularityApp API")
+			return
+		}
+		if (exitCode !== 0 || !isFinite(status) || status === 0) {
+			console.warn("david.singularity: request failed:", exitCode, stderrText.trim())
+			callback(false, null, "Network error: could not reach SingularityApp API")
+			return
+		}
+		if (status >= 200 && status < 300) {
+			var data = null
+			try { data = body === "" ? null : JSON.parse(body) } catch (e) { data = body }
+			callback(true, data, "")
+		} else {
+			var msg = "API error " + status
+			try {
+				var errBody = JSON.parse(body)
+				if (errBody && errBody.message) msg = errBody.message
+				else if (errBody && errBody.error) msg = errBody.error
+			} catch (e) { /* use status code */ }
+			callback(false, null, msg)
+		}
+	}
+
 	function http(method, path, body) {
 		return function(callback) {
-			Qt.callLater(function() {
-				var xhr = new XMLHttpRequest()
-				xhr.open(method, root.baseUrl + path, true)
-				xhr.setRequestHeader("Authorization", "Bearer " + root.settings.apiToken)
-				xhr.setRequestHeader("Content-Type", "application/json")
-				xhr.onerror = function() { callback(false, null, "Network error: could not reach SingularityApp API") }
-				xhr.onload = function() {
-					if (xhr.status >= 200 && xhr.status < 300) {
-						var data = null
-						try { data = JSON.parse(xhr.responseText) } catch (e) { data = xhr.responseText }
-						callback(true, data, "")
-					} else {
-						var msg = "API error " + xhr.status
-						try {
-							var errBody = JSON.parse(xhr.responseText)
-							if (errBody && errBody.message) msg = errBody.message
-							else if (errBody && errBody.error) msg = errBody.error
-						} catch (e) { /* use status code */ }
-						callback(false, null, msg)
-					}
-				}
-				if (body !== undefined && body !== null) xhr.send(JSON.stringify(body))
-				else xhr.send()
-			})
+			var lines = [
+				"url = " + curlQuote(root.baseUrl + path),
+				"request = " + curlQuote(method),
+				"header = " + curlQuote("Authorization: Bearer " + root.settings.apiToken),
+				"header = " + curlQuote("Content-Type: application/json")
+			]
+			if (body !== undefined && body !== null)
+				lines.push("data-binary = " + curlQuote(JSON.stringify(body)))
+			var proc = requestComponent.createObject(root, { config: lines.join("\n") + "\n", done: callback })
+			if (!proc) {
+				callback(false, null, "Could not start request")
+				return
+			}
+			proc.running = true
 		}
 	}
 

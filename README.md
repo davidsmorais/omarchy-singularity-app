@@ -60,6 +60,7 @@ The SingularityApp plugin integrates [SingularityApp](https://singularity-app.co
 
 - Polls `https://api.singularity-app.com/v2` for tasks
 - Supports Bearer token authentication
+- Requests go through `curl` with a 20 s deadline and a 4 MiB response cap enforced while the body streams in; the token and request body are passed on stdin, never on the command line
 - Auto-refresh at configurable intervals (default: 5 minutes)
 - Loads projects and tags on startup
 - Dates are read via `new Date(task.start)` in the local timezone (never by string-slicing), so due dates and times are correct regardless of where the task was created
@@ -97,9 +98,7 @@ The plugin accepts these settings (configure via `omarchy bar set` or the panel 
 
 ### Set API Token
 
-```bash
-omarchy bar set david.singularity apiToken YOUR_TOKEN_HERE
-```
+Paste the token into the panel's API token box (or the widget's settings in the bar editor). Avoid `omarchy bar set david.singularity apiToken ...`: command-line arguments are visible to every local process and end up in shell history.
 
 ## Usage
 
@@ -157,9 +156,7 @@ The service communicates with `https://api.singularity-app.com/v2`:
 
 ### Authentication
 
-Set your API token via:
-- `omarchy bar set david.singularity apiToken YOUR_TOKEN`
-- Or enter it in the panel's API token setup area
+Enter your API token in the panel's API token setup area. It is saved to `shell.json` through the shell API. If that API is unavailable, the token is written over stdin to `$XDG_STATE_HOME/omarchy/plugins/david.singularity/api-token` (mode 0600) instead; it is never put on a command line.
 
 ### Building from Source
 
