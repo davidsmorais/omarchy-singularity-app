@@ -60,7 +60,7 @@ The SingularityApp plugin integrates [SingularityApp](https://singularity-app.co
 
 - Polls `https://api.singularity-app.com/v2` for tasks
 - Supports Bearer token authentication
-- Requests go through `curl` with a 20 s deadline and a 4 MiB response cap enforced while the body streams in; the token and request body are passed on stdin, never on the command line
+- Requests go through `curl` under an end-to-end deadline (curl `--max-time 20`, with the whole pipeline wrapped in `timeout`, which kills curl and its helpers together) and a 4 MiB response cap enforced while the body streams in (`--max-filesize` plus a `head -c` byte count), so oversized responses are rejected before QML buffers or parses them; the token and request body are passed on stdin, never on the command line
 - Auto-refresh at configurable intervals (default: 5 minutes)
 - Loads projects and tags on startup
 - Dates are read via `new Date(task.start)` in the local timezone (never by string-slicing), so due dates and times are correct regardless of where the task was created

@@ -557,16 +557,34 @@ Item {
 	// ── HTTP helper ───────────────────────────────────────────────────────
 	// Requests run through curl rather than XMLHttpRequest, because QML's XHR
 	// has no deadline and buffers the whole body before we can look at it.
-	//   - Deadline: curl --connect-timeout/--max-time, plus a watchdog Timer
-	//     that kills the process if curl itself hangs.
-	//   - Size cap: the body is piped through `head -c`, so at most
-	//     maxResponseBytes (+ a few bytes for the status line) ever reach the
-	//     shell; anything larger makes curl die on SIGPIPE and is rejected.
+	//   - Deadline (end to end): curl --connect-timeout/--max-time bound the
+	//     transfer; the whole pipeline runs under coreutils `timeout`, which
+	//     signals its entire process group (bash, curl, head), so nothing
+	//     outlives the deadline. A QML watchdog is the last resort if even
+	//     `timeout` wedges.
+	//   - Size cap: curl --max-filesize rejects oversized Content-Length up
+	//     front; the streamed body goes through `head -c cap+1`, so no more
+	//     than cap+1 bytes are ever read. The script counts bytes (LC_ALL=C)
+	//     and exits 90 without printing anything if the cap was exceeded, so
+	//     QML only ever buffers/parses bodies that fit.
+	//   - The HTTP status goes to stderr (%{stderr}), keeping stdout the pure
+	//     body.
 	//   - The token and request body are passed via `curl -K -` on stdin, so
 	//     they never appear in argv.
 	readonly property int requestTimeoutSec: 20
 	readonly property int maxResponseBytes: 4 * 1024 * 1024
-	readonly property string statusMarker: "\n__SINGULARITY_HTTP_STATUS__:"
+	readonly property string statusMarker: "__SINGULARITY_HTTP_STATUS__:"
+	readonly property int exitTooLarge: 90
+	readonly property string requestScript:
+		"LC_ALL=C\n" +
+		"set -o pipefail\n" +
+		"body=$(curl --silent --show-error --proto =https --max-redirs 0 " +
+		"--connect-timeout 10 --max-time \"$1\" --max-filesize \"$2\" --config - " +
+		"--write-out \"%{stderr}\\n$3%{http_code}\\n\" | head -c \"$(($2 + 1))\")\n" +
+		"rc=$?\n" +
+		"if [ \"${#body}\" -gt \"$2\" ] || [ \"$rc\" -eq 63 ]; then exit " + exitTooLarge + "; fi\n" +
+		"printf '%s' \"$body\"\n" +
+		"exit \"$rc\"\n"
 
 	Component {
 		id: requestComponent
@@ -578,12 +596,10 @@ Item {
 			property bool timedOut: false
 
 			stdinEnabled: true
-			command: ["bash", "-c",
-				"set -o pipefail; curl --silent --show-error --proto =https --max-redirs 0 " +
-				"--connect-timeout 10 --max-time \"$1\" --config - " +
-				"--write-out \"$2%{http_code}\" | head -c \"$3\"",
-				"bash", String(root.requestTimeoutSec), root.statusMarker,
-				String(root.maxResponseBytes + root.statusMarker.length + 3)]
+			command: ["timeout", "--kill-after=2", String(root.requestTimeoutSec + 3),
+				"bash", "-c", root.requestScript,
+				"bash", String(root.requestTimeoutSec), String(root.maxResponseBytes),
+				root.statusMarker]
 			stdout: StdioCollector { id: out }
 			stderr: StdioCollector { id: err }
 
@@ -607,7 +623,7 @@ Item {
 			}
 
 			property Timer watchdog: Timer {
-				interval: (root.requestTimeoutSec + 5) * 1000
+				interval: (root.requestTimeoutSec + 10) * 1000
 				running: true
 				onTriggered: {
 					proc.timedOut = true
@@ -623,17 +639,19 @@ Item {
 	}
 
 	function finishRequest(callback, exitCode, stdoutText, stderrText, timedOut) {
-		if (timedOut || exitCode === 28) {
+		// 28 = curl --max-time, 124/137 = `timeout` fired (TERM / KILL).
+		if (timedOut || exitCode === 28 || exitCode === 124 || exitCode === 137) {
 			callback(false, null, "Request timed out: SingularityApp API did not respond in time")
 			return
 		}
-		var idx = stdoutText.lastIndexOf(root.statusMarker)
-		var status = idx >= 0 ? parseInt(stdoutText.slice(idx + root.statusMarker.length), 10) : NaN
-		var body = idx >= 0 ? stdoutText.slice(0, idx) : stdoutText
-		if (body.length > root.maxResponseBytes || (idx < 0 && stdoutText.length >= root.maxResponseBytes)) {
+		if (exitCode === root.exitTooLarge) {
 			callback(false, null, "Response too large from SingularityApp API")
 			return
 		}
+		var idx = stderrText.lastIndexOf(root.statusMarker)
+		var status = idx >= 0 ? parseInt(stderrText.slice(idx + root.statusMarker.length), 10) : NaN
+		var body = stdoutText
+		if (idx >= 0) stderrText = stderrText.slice(0, idx)
 		if (exitCode !== 0 || !isFinite(status) || status === 0) {
 			console.warn("david.singularity: request failed:", exitCode, stderrText.trim())
 			callback(false, null, "Network error: could not reach SingularityApp API")
